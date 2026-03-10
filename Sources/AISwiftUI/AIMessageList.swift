@@ -31,7 +31,28 @@
                             .frame(height: 1)
                             .id("bottom")
                     }
+                    .background(
+                        GeometryReader { contentGeometry in
+                            Color.clear.preference(
+                                key: ContentHeightKey.self,
+                                value: contentGeometry.size.height
+                            )
+                        }
+                    )
                 }
+                .onPreferenceChange(ContentHeightKey.self) { _ in
+                    // Preference fires on layout changes; used to detect
+                    // when content grows. The actual near-bottom check
+                    // relies on the scroll view's coordinate space below.
+                }
+                .background(
+                    GeometryReader { scrollGeometry in
+                        Color.clear
+                            .onChange(of: scrollGeometry.frame(in: .global)) {
+                                updateNearBottom(scrollFrame: scrollGeometry)
+                            }
+                    }
+                )
                 .onChange(of: messages.count) {
                     scrollToBottomIfNeeded(proxy: proxy)
                 }
@@ -41,11 +62,25 @@
             }
         }
 
+        private func updateNearBottom(scrollFrame: GeometryProxy) {
+            let frame = scrollFrame.frame(in: .global)
+            let contentHeight = scrollFrame.size.height
+            let threshold: CGFloat = 80
+            isNearBottom = contentHeight <= frame.height + threshold
+        }
+
         private func scrollToBottomIfNeeded(proxy: ScrollViewProxy) {
             guard isNearBottom else { return }
             withAnimation {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
+        }
+    }
+
+    private struct ContentHeightKey: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = nextValue()
         }
     }
 #endif

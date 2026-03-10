@@ -163,11 +163,14 @@ public struct AIStream: AsyncSequence, Sendable {
                     buffer += text
                     let chunks = SmoothStreaming.split(buffer, mode: config.mode)
                     guard chunks.count > 1 else { return }
+                    let safeDelay =
+                        (config.delay.isFinite && config.delay > 0)
+                        ? config.delay : 0
                     for chunk in chunks.dropLast() {
                         continuation.yield(.delta(.text(chunk)))
                         do {
                             try await Task.sleep(
-                                nanoseconds: UInt64(config.delay * 1_000_000_000)
+                                nanoseconds: UInt64(safeDelay * 1_000_000_000)
                             )
                         } catch {
                             flushBuffer()
@@ -186,6 +189,7 @@ public struct AIStream: AsyncSequence, Sendable {
                             flushBuffer()
                             continuation.yield(event)
                         default:
+                            flushBuffer()
                             continuation.yield(event)
                         }
                     }

@@ -84,6 +84,7 @@
             let prov = provider
 
             currentTask = Task.detached {
+                var exchangeUsage: AIUsage?
                 do {
                     let source = prov.stream(request)
                     let stream = smoothConfig.map { source.smooth($0) } ?? source
@@ -96,18 +97,19 @@
                                 self.currentStreamText += delta
                             }
                         case .finish:
+                            let finalUsage = exchangeUsage
                             await MainActor.run {
                                 guard self.streamGeneration == generation else { return }
                                 self.messages.append(.assistant(self.currentStreamText))
                                 self.currentStreamText = ""
+                                if let finalUsage {
+                                    self.totalUsage = self.mergeUsage(
+                                        self.totalUsage, finalUsage
+                                    )
+                                }
                             }
                         case .usage(let usage):
-                            await MainActor.run {
-                                guard self.streamGeneration == generation else { return }
-                                self.totalUsage = self.mergeUsage(
-                                    self.totalUsage, usage
-                                )
-                            }
+                            exchangeUsage = usage
                         default:
                             break
                         }
@@ -174,6 +176,7 @@
             let prov = provider
 
             currentTask = Task.detached {
+                var exchangeUsage: AIUsage?
                 do {
                     let toolStream = prov.streamWithTools(
                         request,
@@ -189,13 +192,10 @@
                                 self.currentStreamText += delta
                             }
                         case .streamEvent(.usage(let usage)):
-                            await MainActor.run {
-                                guard self.streamGeneration == generation else { return }
-                                self.totalUsage = self.mergeUsage(
-                                    self.totalUsage, usage
-                                )
-                            }
+                            exchangeUsage = usage
                         case .streamEvent(.finish):
+                            let finalUsage = exchangeUsage
+                            exchangeUsage = nil
                             await MainActor.run {
                                 guard self.streamGeneration == generation else { return }
                                 if !self.currentStreamText.isEmpty {
@@ -203,6 +203,11 @@
                                         .assistant(self.currentStreamText)
                                     )
                                     self.currentStreamText = ""
+                                }
+                                if let finalUsage {
+                                    self.totalUsage = self.mergeUsage(
+                                        self.totalUsage, finalUsage
+                                    )
                                 }
                             }
                         case .toolApprovalRequired(let toolUse),
@@ -221,6 +226,7 @@
                                 self.toolResults.append(result)
                             }
                         case .stepComplete(let step):
+                            exchangeUsage = nil
                             await MainActor.run {
                                 guard self.streamGeneration == generation else { return }
                                 self.messages.append(contentsOf: step.appendedMessages)
