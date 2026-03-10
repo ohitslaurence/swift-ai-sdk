@@ -80,5 +80,11 @@ let package = Package(
             dependencies: ["AISwiftUI", "AITestSupport"],
             swiftSettings: swiftSettings
         ),
+        .executableTarget(
+            name: "AIIntegrationTests",
+            dependencies: ["AICore", "AIProviderOpenAI", "AIProviderAnthropic"],
+            path: "Tools/AIIntegrationTests",
+            swiftSettings: swiftSettings
+        ),
     ]
 )

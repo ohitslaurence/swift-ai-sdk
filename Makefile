@@ -7,10 +7,10 @@ test:
 	swift test
 
 format:
-	swift format --recursive --in-place Sources/ Tests/
+	swift format --recursive --in-place Sources/ Tests/ Tools/
 
 format-check:
-	swift format lint --strict --recursive Sources/ Tests/
+	swift format lint --strict --recursive Sources/ Tests/ Tools/
 
 lint: format-check
 
