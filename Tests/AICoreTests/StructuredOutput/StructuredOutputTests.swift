@@ -30,6 +30,30 @@ private actor CallCounter {
     }
 }
 
+private actor TaskStartSignal {
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        started = true
+        for waiter in waiters {
+            waiter.resume()
+        }
+        waiters.removeAll()
+    }
+
+    func wait() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            if started {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+}
+
 private actor ContextCapture {
     var value: AIErrorContext?
 
@@ -487,8 +511,11 @@ struct CancellationTests {
 
     @Test("20. Cancellation during repair or retry aborts immediately with .cancelled")
     func cancellationAborts() async throws {
+        let taskStarted = TaskStartSignal()
+
         let provider = MockProvider(
             completionHandler: { _ in
+                await taskStarted.signal()
                 try Task.checkCancellation()
                 return AIResponse(
                     id: "test",
@@ -508,6 +535,7 @@ struct CancellationTests {
             )
         }
 
+        await taskStarted.wait()
         task.cancel()
 
         do {
@@ -517,7 +545,7 @@ struct CancellationTests {
             // Swift runtime cancellation - acceptable
         } catch let error as AIError {
             switch error {
-            case .cancelled, .decodingError:
+            case .cancelled:
                 break
             default:
                 Issue.record("Unexpected error: \(error)")
