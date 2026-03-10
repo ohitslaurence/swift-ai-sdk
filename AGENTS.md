@@ -16,6 +16,10 @@ you cut will be cut again.
 
 Fight entropy. Leave the codebase better than you found it.
 
+## Workflow
+
+- All changes to `main` must go through a pull request for review. Do not push directly to `main`.
+
 ## Reference Repos
 
 - Vercel AI SDK: https://github.com/vercel/ai

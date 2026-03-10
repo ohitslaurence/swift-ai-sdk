@@ -12,10 +12,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    strategy:
-      matrix:
-        os: [macos-15, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: swift-actions/setup-swift@v2
