@@ -200,7 +200,7 @@ enum StructuredOutputGenerator {
             _ = try JSONDecoder().decode(type, from: data)
             return AIErrorContext(message: "Unknown decoding error")
         } catch {
-            return AIErrorContext(message: error.localizedDescription)
+            return AIErrorContext(message: String(describing: error))
         }
     }
 

@@ -21,4 +21,42 @@ public struct AITool: Sendable {
         self.handler = handler
         self.needsApproval = needsApproval
     }
+
+    /// Create a tool with typed `AIStructured` input and `Encodable` output.
+    ///
+    /// Derives `inputSchema` from `Input.jsonSchema`. JSON-encodes non-`String` outputs.
+    /// The stored handler remains `Data -> String` for provider-independent execution.
+    public static func define<Input: AIStructured, Output: Encodable & Sendable>(
+        name: String,
+        description: String,
+        needsApproval: Bool = false,
+        handler: @escaping @Sendable (Input) async throws -> Output
+    ) -> AITool {
+        let schema: AIJSONSchema
+        do {
+            schema = try Input.jsonSchema
+        } catch {
+            schema = .object(properties: [:], required: [])
+        }
+
+        return AITool(
+            name: name,
+            description: description,
+            inputSchema: schema,
+            needsApproval: needsApproval
+        ) { data in
+            let decoder = JSONDecoder()
+            let input = try decoder.decode(Input.self, from: data)
+            let output = try await handler(input)
+
+            if let stringOutput = output as? String {
+                return stringOutput
+            }
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let outputData = try encoder.encode(output)
+            return String(data: outputData, encoding: .utf8) ?? ""
+        }
+    }
 }

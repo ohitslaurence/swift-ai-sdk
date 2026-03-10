@@ -42,8 +42,7 @@ enum AIJSONSchemaGenerator {
             return .string(format: "date-time")
         }
 
-        if let decimalType = type as? Decimal.Type {
-            _ = decimalType
+        if type is Decimal.Type {
             return .number()
         }
 
@@ -144,6 +143,13 @@ enum AIJSONSchemaGenerator {
         }
     }
 
+    /// Extract CodingKeys mappings by encoding a dummy instance and comparing the emitted
+    /// key order with Mirror's property order.
+    ///
+    /// This assumes synthesized `Codable` conformance where `encode(to:)` emits keys in the
+    /// same order as stored properties. Types with custom `encode(to:)` may produce a
+    /// different key count or order; in that case the guard on line count falls through and
+    /// an empty mapping is returned, causing the schema to use property names verbatim.
     private static func extractCodingKeys(for type: Any.Type) -> [String: String] {
         guard type is any Codable.Type else { return [:] }
 
@@ -187,11 +193,13 @@ enum AIJSONSchemaGenerator {
         let realSize = _mangledTypeSize(type) ?? size
         let realAlignment = _mangledTypeAlignment(type) ?? alignment
 
+        let byteCount = max(realSize, 1)
         let buffer = UnsafeMutableRawPointer.allocate(
-            byteCount: max(realSize, 1),
+            byteCount: byteCount,
             alignment: max(realAlignment, 1)
         )
-        buffer.initializeMemory(as: UInt8.self, repeating: 0, count: max(realSize, 1))
+        defer { buffer.deallocate() }
+        buffer.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
 
         let instance = _unsafeBitCast(buffer, to: type)
         return instance
