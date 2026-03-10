@@ -1,6 +1,6 @@
 import Foundation
 
-/// Generates `AIJSONSchema` from `Codable` types using Swift's Mirror-based reflection.
+/// Generates `AIJSONSchema` from `Codable` types using safe decode probing.
 ///
 /// This generator is intentionally conservative. It supports a documented subset of Swift types
 /// and throws `AIError.unsupportedFeature` for shapes that cannot be safely reflected.
@@ -41,7 +41,6 @@ enum AIJSONSchemaGenerator {
         if type == Date.self {
             return .string(format: "date-time")
         }
-
         if type is Decimal.Type {
             return .number()
         }
@@ -61,30 +60,20 @@ enum AIJSONSchemaGenerator {
             return try schemaForStringEnum(enumType)
         }
 
-        let mirror = Mirror(reflecting: createDummyInstance(of: type))
-
-        guard mirror.displayStyle == .struct || mirror.displayStyle == .class else {
-            throw AIError.unsupportedFeature(
-                "Unsupported type shape: \(type) (displayStyle: \(String(describing: mirror.displayStyle))). "
-                    + "Only structs with synthesized Codable conformance are supported."
-            )
+        guard let decodableType = type as? any Decodable.Type else {
+            throw unsupportedShapeError(for: type)
         }
 
-        guard !mirror.children.isEmpty else {
+        let inspection = try inspectProperties(of: decodableType)
+        guard inspection.usedKeyedContainer else {
+            throw unsupportedShapeError(for: type)
+        }
+
+        guard !inspection.properties.isEmpty else {
             throw AIError.unsupportedFeature(
                 "Empty type \(type) cannot be reflected into a schema. Provide a manual jsonSchema override."
             )
         }
-
-        let allChildrenAreLabeled = mirror.children.allSatisfy { $0.label != nil }
-        guard allChildrenAreLabeled else {
-            throw AIError.unsupportedFeature(
-                "Type \(type) has unlabeled children (unkeyed container). "
-                    + "Provide a manual jsonSchema override."
-            )
-        }
-
-        let codingKeyMap = extractCodingKeys(for: type)
 
         var visitedWithSelf = visited
         visitedWithSelf.insert(typeID)
@@ -92,17 +81,11 @@ enum AIJSONSchemaGenerator {
         var properties: [String: AIJSONSchema] = [:]
         var required: [String] = []
 
-        for child in mirror.children {
-            guard let label = child.label else { continue }
-            let propertyName = cleanPropertyName(label)
-            let externalName = codingKeyMap[propertyName] ?? propertyName
-            let childType = Swift.type(of: child.value)
+        for property in inspection.properties {
+            properties[property.name] = try schemaForType(property.type, visited: visitedWithSelf)
 
-            let schema = try schemaForType(childType, visited: visitedWithSelf)
-            properties[externalName] = schema
-
-            if !(childType is any OptionalProtocol.Type) {
-                required.append(externalName)
+            if !property.isOptional {
+                required.append(property.name)
             }
         }
 
@@ -132,93 +115,268 @@ enum AIJSONSchemaGenerator {
     private static func extractStringCases(from type: any CaseIterable.Type) -> [String] {
         let allCases = type.allCases as any Collection
         return allCases.compactMap { value in
-            let mirror = Mirror(reflecting: value)
-            if mirror.displayStyle == .enum, mirror.children.isEmpty {
-                if let rawRep = value as? any RawRepresentable {
-                    return "\(rawRep.rawValue)"
-                }
-                return String(describing: value)
+            guard let rawRepresentable = value as? any RawRepresentable,
+                let rawValue = rawRepresentable.rawValue as? String
+            else {
+                return nil
             }
+
+            return rawValue
+        }
+    }
+
+    private static func inspectProperties(of type: any Decodable.Type) throws -> SchemaInspectionSnapshot {
+        let inspection = SchemaInspection()
+
+        do {
+            _ = try type.init(from: SchemaProbeDecoder(inspection: inspection))
+        } catch is SchemaProbeError {
+            throw unsupportedShapeError(for: type)
+        } catch {
+            throw unsupportedShapeError(for: type)
+        }
+
+        return inspection.snapshot()
+    }
+
+    private static func unsupportedShapeError(for type: Any.Type) -> AIError {
+        AIError.unsupportedFeature(
+            "Unsupported type shape: \(type). "
+                + "Only keyed structs/classes with supported Codable property types are supported."
+        )
+    }
+}
+
+private struct SchemaInspectionSnapshot {
+    let usedKeyedContainer: Bool
+    let properties: [SchemaProperty]
+}
+
+private struct SchemaProperty {
+    let name: String
+    let type: Any.Type
+    let isOptional: Bool
+}
+
+private final class SchemaInspection {
+    private(set) var usedKeyedContainer = false
+    private var properties: [SchemaProperty] = []
+
+    func markKeyedContainerUsed() {
+        usedKeyedContainer = true
+    }
+
+    func recordProperty(name: String, type: Any.Type, isOptional: Bool) {
+        if let existingIndex = properties.firstIndex(where: { $0.name == name }) {
+            let existing = properties[existingIndex]
+            properties[existingIndex] = SchemaProperty(
+                name: existing.name,
+                type: existing.type,
+                isOptional: existing.isOptional && isOptional
+            )
+            return
+        }
+
+        properties.append(SchemaProperty(name: name, type: type, isOptional: isOptional))
+    }
+
+    func snapshot() -> SchemaInspectionSnapshot {
+        SchemaInspectionSnapshot(usedKeyedContainer: usedKeyedContainer, properties: properties)
+    }
+}
+
+private enum SchemaProbeError: Error {
+    case unsupportedContainerShape
+}
+
+private final class SchemaProbeDecoder: Decoder {
+    let inspection: SchemaInspection
+    let codingPath: [any CodingKey]
+    let userInfo: [CodingUserInfoKey: Any]
+
+    init(
+        inspection: SchemaInspection,
+        codingPath: [any CodingKey] = [],
+        userInfo: [CodingUserInfoKey: Any] = [:]
+    ) {
+        self.inspection = inspection
+        self.codingPath = codingPath
+        self.userInfo = userInfo
+    }
+
+    func container<Key: CodingKey>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> {
+        inspection.markKeyedContainerUsed()
+        let container = SchemaProbeKeyedContainer<Key>(inspection: inspection, codingPath: codingPath)
+        return KeyedDecodingContainer(container)
+    }
+
+    func unkeyedContainer() throws -> any UnkeyedDecodingContainer {
+        throw SchemaProbeError.unsupportedContainerShape
+    }
+
+    func singleValueContainer() throws -> any SingleValueDecodingContainer {
+        throw SchemaProbeError.unsupportedContainerShape
+    }
+}
+
+private struct SchemaProbeKeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
+    let inspection: SchemaInspection
+    let codingPath: [any CodingKey]
+
+    var allKeys: [Key] { [] }
+
+    func contains(_ key: Key) -> Bool {
+        true
+    }
+
+    func decodeNil(forKey key: Key) throws -> Bool {
+        inspection.recordProperty(name: key.stringValue, type: Optional<String>.self, isOptional: true)
+        return true
+    }
+
+    func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
+        inspection.recordProperty(name: key.stringValue, type: type, isOptional: false)
+        return try SchemaPlaceholderFactory.value(for: type)
+    }
+
+    func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
+        inspection.recordProperty(name: key.stringValue, type: type, isOptional: true)
+        return nil
+    }
+
+    func nestedContainer<NestedKey: CodingKey>(
+        keyedBy type: NestedKey.Type,
+        forKey key: Key
+    ) throws -> KeyedDecodingContainer<NestedKey> {
+        throw SchemaProbeError.unsupportedContainerShape
+    }
+
+    func nestedUnkeyedContainer(forKey key: Key) throws -> any UnkeyedDecodingContainer {
+        throw SchemaProbeError.unsupportedContainerShape
+    }
+
+    func superDecoder() throws -> any Decoder {
+        SchemaProbeDecoder(inspection: inspection, codingPath: codingPath)
+    }
+
+    func superDecoder(forKey key: Key) throws -> any Decoder {
+        SchemaProbeDecoder(inspection: inspection, codingPath: codingPath + [key])
+    }
+}
+
+private enum SchemaPlaceholderFactory {
+    static func value<T: Decodable>(for type: T.Type) throws -> T {
+        if type == String.self {
+            return "" as! T
+        }
+        if type == Int.self {
+            return 0 as! T
+        }
+        if type == Int8.self {
+            return Int8(0) as! T
+        }
+        if type == Int16.self {
+            return Int16(0) as! T
+        }
+        if type == Int32.self {
+            return Int32(0) as! T
+        }
+        if type == Int64.self {
+            return Int64(0) as! T
+        }
+        if type == UInt.self {
+            return UInt(0) as! T
+        }
+        if type == UInt8.self {
+            return UInt8(0) as! T
+        }
+        if type == UInt16.self {
+            return UInt16(0) as! T
+        }
+        if type == UInt32.self {
+            return UInt32(0) as! T
+        }
+        if type == UInt64.self {
+            return UInt64(0) as! T
+        }
+        if type == Double.self {
+            return Double.zero as! T
+        }
+        if type == Float.self {
+            return Float.zero as! T
+        }
+        if type == Bool.self {
+            return false as! T
+        }
+        if type == Date.self {
+            return Date(timeIntervalSince1970: 0) as! T
+        }
+        if type == Decimal.self {
+            return Decimal.zero as! T
+        }
+
+        if let optional = nilOptional(as: type) {
+            return optional
+        }
+
+        if let array = emptyArray(as: type) {
+            return array
+        }
+
+        if let enumCase = firstStringEnumCase(as: type) {
+            return enumCase
+        }
+
+        return try T(from: SchemaProbeDecoder(inspection: SchemaInspection()))
+    }
+
+    private static func nilOptional<T: Decodable>(as type: T.Type) -> T? {
+        guard let optionalType = type as? any OptionalProtocol.Type else {
             return nil
         }
+
+        func makeNil<Wrapped>(_: Wrapped.Type) -> Any {
+            Optional<Wrapped>.none as Any
+        }
+
+        let value = _openExistential(optionalType.wrappedType, do: makeNil)
+        return value as? T
     }
 
-    /// Extract CodingKeys mappings by encoding a dummy instance and comparing the emitted
-    /// key order with Mirror's property order.
-    ///
-    /// This assumes synthesized `Codable` conformance where `encode(to:)` emits keys in the
-    /// same order as stored properties. Types with custom `encode(to:)` may produce a
-    /// different key count or order; in that case the guard on line count falls through and
-    /// an empty mapping is returned, causing the schema to use property names verbatim.
-    private static func extractCodingKeys(for type: Any.Type) -> [String: String] {
-        guard type is any Codable.Type else { return [:] }
-
-        let extractor = CodingKeyExtractor()
-        let instance = createDummyInstance(of: type)
-        do {
-            try (instance as? any Encodable)?.encode(to: extractor)
-        } catch {
-            return [:]
+    private static func emptyArray<T: Decodable>(as type: T.Type) -> T? {
+        guard let arrayType = type as? any ArrayProtocol.Type else {
+            return nil
         }
 
-        let mirror = Mirror(reflecting: instance)
-        let propertyNames = mirror.children.compactMap { child -> String? in
-            guard let label = child.label else { return nil }
-            return cleanPropertyName(label)
+        func makeArray<Element>(_: Element.Type) -> Any {
+            [Element]()
         }
 
-        guard propertyNames.count == extractor.orderedKeys.count else {
-            return [:]
+        let value = _openExistential(arrayType.elementType, do: makeArray)
+        return value as? T
+    }
+
+    private static func firstStringEnumCase<T: Decodable>(as type: T.Type) -> T? {
+        guard let iterableType = type as? any CaseIterable.Type,
+            type is any RawRepresentable.Type
+        else {
+            return nil
         }
 
-        var mapping: [String: String] = [:]
-        for (propertyName, codingKeyName) in zip(propertyNames, extractor.orderedKeys) {
-            if propertyName != codingKeyName {
-                mapping[propertyName] = codingKeyName
+        let allCases = iterableType.allCases as any Collection
+        for value in allCases {
+            guard let rawRepresentable = value as? any RawRepresentable,
+                rawRepresentable.rawValue is String,
+                let typedValue = value as? T
+            else {
+                continue
             }
+
+            return typedValue
         }
-        return mapping
+
+        return nil
     }
-
-    private static func cleanPropertyName(_ name: String) -> String {
-        if name.hasPrefix("_") {
-            return String(name.dropFirst())
-        }
-        return name
-    }
-
-    private static func createDummyInstance(of type: Any.Type) -> Any {
-        let size = MemoryLayout<Int>.size
-        let alignment = MemoryLayout<Int>.alignment
-        let realSize = _mangledTypeSize(type) ?? size
-        let realAlignment = _mangledTypeAlignment(type) ?? alignment
-
-        let byteCount = max(realSize, 1)
-        let buffer = UnsafeMutableRawPointer.allocate(
-            byteCount: byteCount,
-            alignment: max(realAlignment, 1)
-        )
-        defer { buffer.deallocate() }
-        buffer.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
-
-        let instance = _unsafeBitCast(buffer, to: type)
-        return instance
-    }
-}
-
-private func _mangledTypeSize(_ type: Any.Type) -> Int? {
-    MemoryLayout<Int>.size  // Fallback
-}
-
-private func _mangledTypeAlignment(_ type: Any.Type) -> Int? {
-    MemoryLayout<Int>.alignment  // Fallback
-}
-
-private func _unsafeBitCast(_ pointer: UnsafeMutableRawPointer, to type: Any.Type) -> Any {
-    func project<T>(_: T.Type) -> Any {
-        pointer.assumingMemoryBound(to: T.self).pointee
-    }
-    return _openExistential(type, do: project)
 }
 
 /// Protocol witness for Optional to extract wrapped type.
@@ -237,126 +395,4 @@ protocol ArrayProtocol {
 
 extension Array: ArrayProtocol {
     static var elementType: Any.Type { Element.self }
-}
-
-/// A minimal encoder that extracts CodingKeys mappings by observing which keys
-/// a type's `encode(to:)` writes.
-private final class CodingKeyExtractor: Encoder {
-    var codingPath: [any CodingKey] = []
-    var userInfo: [CodingUserInfoKey: Any] = [:]
-    var orderedKeys: [String] = []
-
-    func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
-        let container = KeyExtractorKeyedContainer<Key>(extractor: self)
-        return KeyedEncodingContainer(container)
-    }
-
-    func unkeyedContainer() -> any UnkeyedEncodingContainer {
-        DummyUnkeyedContainer(codingPath: codingPath)
-    }
-
-    func singleValueContainer() -> any SingleValueEncodingContainer {
-        DummySingleValueContainer(codingPath: codingPath)
-    }
-}
-
-private struct KeyExtractorKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
-    let extractor: CodingKeyExtractor
-    var codingPath: [any CodingKey] = []
-
-    mutating func encodeNil(forKey key: Key) throws {
-        recordKey(key)
-    }
-
-    mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
-        recordKey(key)
-    }
-
-    mutating func nestedContainer<NestedKey: CodingKey>(
-        keyedBy keyType: NestedKey.Type, forKey key: Key
-    ) -> KeyedEncodingContainer<NestedKey> {
-        recordKey(key)
-        return KeyedEncodingContainer(
-            KeyExtractorKeyedContainer<NestedKey>(extractor: extractor)
-        )
-    }
-
-    mutating func nestedUnkeyedContainer(forKey key: Key) -> any UnkeyedEncodingContainer {
-        recordKey(key)
-        return DummyUnkeyedContainer(codingPath: codingPath)
-    }
-
-    mutating func superEncoder() -> any Encoder {
-        extractor
-    }
-
-    mutating func superEncoder(forKey key: Key) -> any Encoder {
-        recordKey(key)
-        return extractor
-    }
-
-    private func recordKey(_ key: Key) {
-        if key.intValue == nil {
-            extractor.orderedKeys.append(key.stringValue)
-        }
-    }
-}
-
-private struct DummyUnkeyedContainer: UnkeyedEncodingContainer {
-    var codingPath: [any CodingKey]
-    var count: Int = 0
-
-    mutating func encodeNil() throws {}
-    mutating func encode<T: Encodable>(_ value: T) throws {}
-    mutating func nestedContainer<NestedKey: CodingKey>(
-        keyedBy keyType: NestedKey.Type
-    ) -> KeyedEncodingContainer<NestedKey> {
-        KeyedEncodingContainer(DummyKeyedContainer<NestedKey>(codingPath: codingPath))
-    }
-    mutating func nestedUnkeyedContainer() -> any UnkeyedEncodingContainer {
-        DummyUnkeyedContainer(codingPath: codingPath)
-    }
-    mutating func superEncoder() -> any Encoder {
-        DummyEncoder(codingPath: codingPath)
-    }
-}
-
-private struct DummyKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
-    var codingPath: [any CodingKey]
-    mutating func encodeNil(forKey key: Key) throws {}
-    mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {}
-    mutating func nestedContainer<NestedKey: CodingKey>(
-        keyedBy keyType: NestedKey.Type, forKey key: Key
-    ) -> KeyedEncodingContainer<NestedKey> {
-        KeyedEncodingContainer(DummyKeyedContainer<NestedKey>(codingPath: codingPath))
-    }
-    mutating func nestedUnkeyedContainer(forKey key: Key) -> any UnkeyedEncodingContainer {
-        DummyUnkeyedContainer(codingPath: codingPath)
-    }
-    mutating func superEncoder() -> any Encoder {
-        DummyEncoder(codingPath: codingPath)
-    }
-    mutating func superEncoder(forKey key: Key) -> any Encoder {
-        DummyEncoder(codingPath: codingPath)
-    }
-}
-
-private struct DummySingleValueContainer: SingleValueEncodingContainer {
-    var codingPath: [any CodingKey]
-    mutating func encodeNil() throws {}
-    mutating func encode<T: Encodable>(_ value: T) throws {}
-}
-
-private struct DummyEncoder: Encoder {
-    var codingPath: [any CodingKey]
-    var userInfo: [CodingUserInfoKey: Any] = [:]
-    func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
-        KeyedEncodingContainer(DummyKeyedContainer<Key>(codingPath: codingPath))
-    }
-    func unkeyedContainer() -> any UnkeyedEncodingContainer {
-        DummyUnkeyedContainer(codingPath: codingPath)
-    }
-    func singleValueContainer() -> any SingleValueEncodingContainer {
-        DummySingleValueContainer(codingPath: codingPath)
-    }
 }

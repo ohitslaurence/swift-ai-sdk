@@ -2,7 +2,7 @@ import AICore
 import Foundation
 
 struct OpenAIEmbeddingResponseParser {
-    func parse(_ data: Data) throws -> AIEmbeddingResponse {
+    func parse(_ data: Data, warnings: [AIProviderWarning] = []) throws -> AIEmbeddingResponse {
         do {
             let response = try JSONDecoder().decode(OpenAIEmbeddingAPIResponse.self, from: data)
 
@@ -20,7 +20,8 @@ struct OpenAIEmbeddingResponseParser {
             return AIEmbeddingResponse(
                 model: response.model,
                 embeddings: embeddings,
-                usage: usage
+                usage: usage,
+                warnings: warnings
             )
         } catch let error as AIError {
             throw error
