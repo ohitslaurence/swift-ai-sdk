@@ -346,13 +346,15 @@ final class ProviderHelpersAndEmbeddingsTests: XCTestCase {
             _ = try await task.value
             XCTFail("Expected cancellation error")
         } catch is CancellationError {
-            // expected — Task.sleep throws CancellationError
+            // expected
+        } catch let error as AIError {
+            XCTAssertEqual(error, .cancelled)
         } catch {
-            // CancellationError wrapped or AIError.cancelled both acceptable
+            XCTFail("Unexpected error: \(error)")
         }
 
-        let calls = await callCounter.next()
-        XCTAssertLessThanOrEqual(calls, 3, "Not all batches should have been sent")
+        let calls = await callCounter.count
+        XCTAssertLessThan(calls, 3, "Cancellation should stop before all batches are sent")
     }
 
     func test_defaultEmbedImplementationThrowsUnsupportedFeature() async {
@@ -386,6 +388,8 @@ final class ProviderHelpersAndEmbeddingsTests: XCTestCase {
 
 private actor BatchCounter {
     private var value = 0
+
+    var count: Int { value }
 
     func next() -> Int {
         let current = value
