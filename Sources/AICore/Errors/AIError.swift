@@ -10,7 +10,7 @@ public struct AIErrorContext: Error, Sendable, Equatable {
         self.underlyingType = underlyingType
     }
 
-    init(_ error: any Error) {
+    package init(_ error: any Error) {
         self.init(
             message: String(describing: error),
             underlyingType: String(reflecting: type(of: error))

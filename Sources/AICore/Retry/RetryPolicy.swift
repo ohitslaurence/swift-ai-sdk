@@ -1,6 +1,9 @@
 import Foundation
 
 /// Retry configuration for provider requests.
+///
+/// Automatic retries stop once a stream has emitted its first event or once a
+/// tool loop has already executed a tool side effect.
 public struct RetryPolicy: Sendable, Codable, Equatable {
     public var maxRetries: Int
     public var initialDelay: TimeInterval

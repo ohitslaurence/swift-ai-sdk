@@ -151,6 +151,47 @@ final class MiddlewareTests: XCTestCase {
         XCTAssertFalse(logs.snapshot.isEmpty)
     }
 
+    func test_loggingMiddleware_logsGenerationAndEmbeddingWarnings() async throws {
+        let logs = EventRecorder()
+        let provider = MockProvider(
+            completionHandler: { _ in
+                AIResponse(
+                    id: "resp",
+                    content: [.text("Hello")],
+                    model: "mock",
+                    finishReason: .stop,
+                    warnings: [
+                        AIProviderWarning(
+                            code: "unsupported_stop",
+                            message: "Stop sequences were ignored",
+                            parameter: "stopSequences"
+                        )
+                    ]
+                )
+            },
+            embeddingHandler: { request in
+                AIEmbeddingResponse(
+                    model: request.model.id,
+                    embeddings: [AIEmbedding(index: 0, vector: [1])],
+                    warnings: [
+                        AIProviderWarning(
+                            code: "dimensions_ignored",
+                            message: "Dimensions are fixed for this model"
+                        )
+                    ]
+                )
+            }
+        )
+        let wrapped = withMiddleware(provider, middleware: [LoggingMiddleware(logger: { logs.record($0) })])
+
+        _ = try await wrapped.complete(AIRequest(model: AIModel("mock"), messages: [.user("Hello")]))
+        _ = try await wrapped.embed(AIEmbeddingRequest(model: AIModel("embed"), inputs: [.text("swift")]))
+
+        XCTAssertTrue(logs.snapshot.contains(where: { $0.contains("complete warning code=unsupported_stop") }))
+        XCTAssertTrue(logs.snapshot.contains(where: { $0.contains("parameter=stopSequences") }))
+        XCTAssertTrue(logs.snapshot.contains(where: { $0.contains("embed warning code=dimensions_ignored") }))
+    }
+
     func test_defaultSettingsMiddleware_fillsOnlyMissingGenerationFields() async throws {
         let provider = MockProvider(
             embeddingHandler: { request in

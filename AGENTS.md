@@ -28,3 +28,5 @@ Use these as implementation references when designing protocol handling, UX flow
 - `AIStream` is a single-pass, single-consumer stream. Helper streams like accumulated text consume the same underlying stream.
 - Provider-specific higher-level behavior should flow through `AIProviderCapabilities`, not through cross-module imports from `AICore` into provider modules.
 - `AISwiftUI` observable state types are `@MainActor` reference types and are intentionally not blanket `Sendable`.
+- Swift 6 currently rejects racing `AsyncThrowingStream.Iterator.next()` inside a `@Sendable` timeout closure because the iterator is non-`Sendable`. Chunk-timeout enforcement needs a watchdog task/state approach instead of wrapping `next()` directly in `AITimeoutController.withTimeout(...)`.
+- Anthropic `output_config.format` structured outputs are GA and no longer require a beta header, but Anthropic currently documents official support only for Claude Opus 4.6/4.5, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5. Legacy official model IDs should warn rather than being treated as silently supported.

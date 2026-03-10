@@ -108,6 +108,90 @@ final class RetryAndTimeoutTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func test_timeoutController_chunkTimeoutFailsStalledStream() async {
+        let stream = AIStream(
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
+                let task = Task {
+                    continuation.yield(.start(id: "stream_1", model: "claude-sonnet-4-5"))
+
+                    do {
+                        try await Task.sleep(nanoseconds: 200_000_000)
+                        continuation.yield(.finish(.stop))
+                        continuation.finish()
+                    } catch is CancellationError {
+                        continuation.finish(throwing: AIError.cancelled)
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+
+                continuation.onTermination = { _ in
+                    task.cancel()
+                }
+            }
+        )
+        let timedStream = AITimeoutController.enforceChunkTimeout(on: stream, timeout: 0.05)
+
+        do {
+            _ = try await timedStream.collect()
+            XCTFail("Expected chunk timeout")
+        } catch let error as AIError {
+            XCTAssertEqual(error, .timeout(.chunk))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_retryExecutorExecuteStream_retriesRetryableFailureBeforeFirstEvent() async throws {
+        let policy = RetryPolicy(maxRetries: 2, initialDelay: 0, backoffMultiplier: 1, maxDelay: 0)
+        let recorder = AttemptRecorder()
+
+        let stream = RetryExecutor.executeStream(policy: policy, timeout: .default) { attempt in
+            await recorder.set(attempt)
+
+            if attempt == 1 {
+                return .failed(.rateLimited(retryAfter: nil))
+            }
+
+            return .finished(text: "ok", model: "gpt-4o")
+        }
+
+        let response = try await stream.collect()
+        let attempts = await recorder.value
+
+        XCTAssertEqual(response.text, "ok")
+        XCTAssertEqual(attempts, 2)
+    }
+
+    func test_retryExecutorExecuteStream_doesNotRetryAfterFirstEvent() async {
+        let policy = RetryPolicy(maxRetries: 2, initialDelay: 0, backoffMultiplier: 1, maxDelay: 0)
+        let recorder = AttemptRecorder()
+        let stream = RetryExecutor.executeStream(policy: policy, timeout: .default) { attempt in
+            await recorder.set(attempt)
+
+            return AIStream(
+                AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                    continuation in
+                    continuation.yield(.start(id: "stream_\(attempt)", model: "gpt-4o"))
+                    continuation.yield(.delta(.text("partial")))
+                    continuation.finish(throwing: AIError.rateLimited(retryAfter: nil))
+                }
+            )
+        }
+
+        do {
+            _ = try await stream.collect()
+            XCTFail("Expected the stream to fail")
+        } catch let error as AIError {
+            let attempts = await recorder.value
+            XCTAssertEqual(error, .rateLimited(retryAfter: nil))
+            XCTAssertEqual(attempts, 1)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
 }
 
 private actor AttemptRecorder {

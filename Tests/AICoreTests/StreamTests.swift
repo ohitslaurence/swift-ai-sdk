@@ -54,6 +54,49 @@ final class StreamTests: XCTestCase {
         }
     }
 
+    func test_textStream_whenStartedStreamEndsWithoutFinish_throwsStreamInterrupted() async {
+        do {
+            var received: [String] = []
+
+            for try await chunk in makeStream(
+                events: [
+                    .start(id: "stream_4", model: "gpt-4o"),
+                    .delta(.text("partial")),
+                ]
+            ).textStream {
+                received.append(chunk)
+            }
+
+            XCTFail("Expected stream interruption")
+        } catch let error as AIError {
+            XCTAssertEqual(error, .streamInterrupted)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_accumulatedText_whenStartedStreamEndsWithoutFinish_throwsStreamInterrupted() async {
+        do {
+            var received: [String] = []
+
+            for try await chunk in makeStream(
+                events: [
+                    .start(id: "stream_5", model: "gpt-4o"),
+                    .delta(.text("a")),
+                    .delta(.text("b")),
+                ]
+            ).accumulatedText {
+                received.append(chunk)
+            }
+
+            XCTFail("Expected stream interruption")
+        } catch let error as AIError {
+            XCTAssertEqual(error, .streamInterrupted)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func test_textStreamAndAccumulatedText_rethrowUpstreamErrors() async {
         let textError = AIError.serverError(statusCode: 500, message: "boom")
 
@@ -79,6 +122,61 @@ final class StreamTests: XCTestCase {
             XCTFail("Expected accumulated text stream to fail")
         } catch let error as AIError {
             XCTAssertEqual(error, textError)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_collect_mapsNonAIErrorUpstreamFailureToUnknownAIError() async {
+        let stream = AIStream(
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
+                continuation.yield(.start(id: "stream_plain_error", model: "gpt-4o"))
+                continuation.finish(throwing: PlainStreamError())
+            }
+        )
+
+        do {
+            _ = try await stream.collect()
+            XCTFail("Expected collect to fail")
+        } catch let error as AIError {
+            guard case .unknown(let context) = error else {
+                XCTFail("Expected unknown AIError, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(context.message, "plain failure")
+            XCTAssertTrue(context.underlyingType?.contains("PlainStreamError") == true)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_textStream_mapsNonAIErrorUpstreamFailureToUnknownAIError() async {
+        let stream = AIStream(
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
+                continuation.yield(.delta(.text("hello")))
+                continuation.finish(throwing: PlainStreamError())
+            }
+        )
+
+        do {
+            var received: [String] = []
+
+            for try await chunk in stream.textStream {
+                received.append(chunk)
+            }
+
+            XCTFail("Expected text stream to fail")
+        } catch let error as AIError {
+            guard case .unknown(let context) = error else {
+                XCTFail("Expected unknown AIError, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(context.message, "plain failure")
+            XCTAssertTrue(context.underlyingType?.contains("PlainStreamError") == true)
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
@@ -129,4 +227,8 @@ final class StreamTests: XCTestCase {
             }
         )
     }
+}
+
+private struct PlainStreamError: Error, Sendable, CustomStringConvertible {
+    var description: String { "plain failure" }
 }

@@ -21,6 +21,7 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
         do {
             let response = try await next(request)
             let duration = clock.now - start
+            logWarnings(response.warnings, prefix: "complete")
             logger("[AI] complete finish model=\(response.model) duration=\(duration)")
             return response
         } catch {
@@ -38,7 +39,10 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
         logger("[AI] stream start model=\(request.model.id)")
 
         return AIStream(
-            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+            wrapping: AsyncThrowingStream<AIStreamEvent, any Error>(
+                AIStreamEvent.self,
+                bufferingPolicy: .unbounded
+            ) {
                 continuation in
                 let task = Task {
                     do {
@@ -65,7 +69,9 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
                 continuation.onTermination = { _ in
                     task.cancel()
                 }
-            }
+            },
+            applyLifecyclePolicy: true,
+            warningProvider: { await upstream.responseWarnings() }
         )
     }
 
@@ -80,12 +86,25 @@ public struct LoggingMiddleware: AIMiddleware, Sendable {
         do {
             let response = try await next(request)
             let duration = clock.now - start
+            logWarnings(response.warnings, prefix: "embed")
             logger("[AI] embed finish model=\(response.model) duration=\(duration)")
             return response
         } catch {
             let duration = clock.now - start
             logger("[AI] embed error duration=\(duration) error=\(error)")
             throw error
+        }
+    }
+
+    private func logWarnings(_ warnings: [AIProviderWarning], prefix: String) {
+        for warning in warnings {
+            if let parameter = warning.parameter {
+                logger(
+                    "[AI] \(prefix) warning code=\(warning.code) parameter=\(parameter) message=\(warning.message)"
+                )
+            } else {
+                logger("[AI] \(prefix) warning code=\(warning.code) message=\(warning.message)")
+            }
         }
     }
 }

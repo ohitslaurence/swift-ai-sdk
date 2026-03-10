@@ -13,4 +13,15 @@ final class AnthropicProviderSmokeTests: XCTestCase {
         XCTAssertEqual(provider.capabilities.instructions.defaultFormat, .topLevelSystemPrompt)
         XCTAssertFalse(provider.capabilities.embeddings.supportsEmbeddings)
     }
+
+    func test_claudeModelVariantsResolveToCurrentIDs() {
+        XCTAssertEqual(AIModel.claude(.haiku45), AIModel("claude-haiku-4-5", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.sonnet45), AIModel("claude-sonnet-4-5", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.sonnet46), AIModel("claude-sonnet-4-6", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.opus46), AIModel("claude-opus-4-6", provider: "anthropic"))
+        XCTAssertEqual(
+            AIModel.claude(.custom("claude-custom-deployment")),
+            AIModel("claude-custom-deployment", provider: "anthropic")
+        )
+    }
 }

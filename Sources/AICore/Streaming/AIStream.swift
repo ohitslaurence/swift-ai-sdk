@@ -1,14 +1,36 @@
 import Foundation
 
 /// A single-pass async sequence of stream events.
+///
+/// Internally this wraps `AsyncThrowingStream<..., any Error>` instead of an
+/// `AIError`-typed stream because current Swift concurrency constraints make the
+/// stricter typed form impractical for the SDK's stream wrappers. Public helper
+/// behavior still normalizes surfaced failures to `AIError` values.
 public struct AIStream: AsyncSequence, Sendable {
     public typealias Element = AIStreamEvent
     public typealias AsyncIterator = AsyncThrowingStream<AIStreamEvent, any Error>.Iterator
 
     private let stream: AsyncThrowingStream<AIStreamEvent, any Error>
+    private let warningProvider: @Sendable () async -> [AIProviderWarning]
 
     public init(_ stream: AsyncThrowingStream<AIStreamEvent, any Error>) {
-        self.stream = stream
+        self.init(wrapping: stream, applyLifecyclePolicy: true, warningProvider: { [] })
+    }
+
+    package init(
+        _ stream: AsyncThrowingStream<AIStreamEvent, any Error>,
+        warnings: [AIProviderWarning]
+    ) {
+        self.init(wrapping: stream, applyLifecyclePolicy: true, warningProvider: { warnings })
+    }
+
+    init(
+        wrapping stream: AsyncThrowingStream<AIStreamEvent, any Error>,
+        applyLifecyclePolicy: Bool,
+        warningProvider: @escaping @Sendable () async -> [AIProviderWarning]
+    ) {
+        self.stream = applyLifecyclePolicy ? Self.makeLifecycleStream(from: stream) : stream
+        self.warningProvider = warningProvider
     }
 
     public func makeAsyncIterator() -> AsyncIterator {
@@ -66,7 +88,8 @@ public struct AIStream: AsyncSequence, Sendable {
             content: content.map { $0.contentValue },
             model: model,
             usage: usage,
-            finishReason: finishReason
+            finishReason: finishReason,
+            warnings: await responseWarnings()
         )
     }
 
@@ -147,6 +170,62 @@ public struct AIStream: AsyncSequence, Sendable {
                 continuation.finish(throwing: error)
             }
         )
+    }
+
+    private static func makeLifecycleStream(
+        from source: AsyncThrowingStream<AIStreamEvent, any Error>
+    ) -> AsyncThrowingStream<AIStreamEvent, any Error> {
+        AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+            continuation in
+            let task = Task {
+                var sawEvent = false
+                var sawFinish = false
+
+                do {
+                    for try await event in source {
+                        sawEvent = true
+
+                        if case .finish = event {
+                            sawFinish = true
+                        }
+
+                        continuation.yield(event)
+                    }
+
+                    if sawEvent, !sawFinish {
+                        continuation.finish(throwing: AIError.streamInterrupted)
+                    } else {
+                        continuation.finish()
+                    }
+                } catch is CancellationError {
+                    continuation.finish(throwing: AIError.cancelled)
+                } catch let error as AIError {
+                    continuation.finish(throwing: error)
+                } catch {
+                    continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func responseWarnings() async -> [AIProviderWarning] {
+        await warningProvider()
+    }
+}
+
+actor AIStreamWarningStore {
+    private var warnings: [AIProviderWarning] = []
+
+    func set(_ warnings: [AIProviderWarning]) {
+        self.warnings = warnings
+    }
+
+    func get() -> [AIProviderWarning] {
+        warnings
     }
 }
 

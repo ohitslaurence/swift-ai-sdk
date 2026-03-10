@@ -13,6 +13,12 @@ public protocol AIHTTPTransport: Sendable {
 /// A streaming HTTP response.
 public struct AIHTTPStreamResponse: Sendable {
     public let response: HTTPURLResponse
+    /// The raw transport stream.
+    ///
+    /// This remains `AsyncThrowingStream<Data, any Error>` rather than an
+    /// `AIError`-typed stream because of current Swift concurrency limitations
+    /// around composing stream adapters. Providers are still expected to map
+    /// transport failures to `AIError` before surfacing them to callers.
     public let body: AsyncThrowingStream<Data, any Error>
 
     public init(response: HTTPURLResponse, body: AsyncThrowingStream<Data, any Error>) {

@@ -19,13 +19,19 @@ struct MiddlewareProvider: AIProvider, Sendable {
     }
 
     func stream(_ request: AIRequest) -> AIStream {
-        AIStream(
-            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+        let warningStore = AIStreamWarningStore()
+
+        return AIStream(
+            wrapping: AsyncThrowingStream<AIStreamEvent, any Error>(
+                AIStreamEvent.self,
+                bufferingPolicy: .unbounded
+            ) {
                 continuation in
                 let task = Task {
                     do {
                         let transformedRequest = try await transformedRequest(from: request)
                         let stream = wrappedStreamOperation()(transformedRequest)
+                        await warningStore.set(await stream.responseWarnings())
 
                         for try await event in stream {
                             continuation.yield(event)
@@ -44,7 +50,9 @@ struct MiddlewareProvider: AIProvider, Sendable {
                 continuation.onTermination = { _ in
                     task.cancel()
                 }
-            }
+            },
+            applyLifecyclePolicy: true,
+            warningProvider: { await warningStore.get() }
         )
     }
 
