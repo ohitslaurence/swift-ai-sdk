@@ -61,10 +61,41 @@ public struct MockProvider: AIProvider, Sendable {
     }
 
     public func stream(_ request: AIRequest) -> AIStream {
-        Task {
-            await recorder.recordStream(request)
-        }
-        return streamHandler(request)
+        let stream = streamHandler(request)
+
+        return AIStream(
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
+                let task = Task {
+                    await recorder.recordStream(request)
+
+                    do {
+                        for try await event in stream {
+                            continuation.yield(event)
+                        }
+
+                        continuation.finish()
+                    } catch is CancellationError {
+                        continuation.finish(throwing: AIError.cancelled)
+                    } catch let error as AIError {
+                        continuation.finish(throwing: error)
+                    } catch {
+                        continuation.finish(
+                            throwing: AIError.unknown(
+                                AIErrorContext(
+                                    message: String(describing: error),
+                                    underlyingType: String(reflecting: type(of: error))
+                                )
+                            )
+                        )
+                    }
+                }
+
+                continuation.onTermination = { _ in
+                    task.cancel()
+                }
+            }
+        )
     }
 
     public func embed(_ request: AIEmbeddingRequest) async throws -> AIEmbeddingResponse {

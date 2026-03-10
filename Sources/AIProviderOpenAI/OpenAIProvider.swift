@@ -42,11 +42,59 @@ public struct OpenAIProvider: AIProvider, Sendable {
         [
             .gpt(.gpt4o),
             .gpt(.gpt4oMini),
+            .gpt(.gpt41),
+            .gpt(.gpt41Mini),
+            .gpt(.gpt41Nano),
+            .gpt(.gpt5),
+            .gpt(.gpt5Mini),
+            .gpt(.gpt5Nano),
+            .gpt(.o3),
+            .gpt(.o3Mini),
+            .gpt(.o4Mini),
             .openAIEmbedding(.textEmbedding3Small),
+            .openAIEmbedding(.textEmbedding3Large),
         ]
     }
 
     public var capabilities: AIProviderCapabilities {
-        AIProviderCapabilities(supportsStreaming: true, supportsEmbeddings: true)
+        AIProviderCapabilities(
+            instructions: AIInstructionCapabilities(
+                defaultFormat: .message(role: .system),
+                reasoningModelFormatOverride: .message(role: .developer),
+                reasoningModelIDs: [
+                    .gpt(.gpt5),
+                    .gpt(.gpt5Mini),
+                    .gpt(.gpt5Nano),
+                    .gpt(.o3),
+                    .gpt(.o3Mini),
+                    .gpt(.o4Mini),
+                ]
+            ),
+            structuredOutput: AIStructuredOutputCapabilities(
+                supportsJSONMode: true,
+                supportsJSONSchema: true,
+                defaultStrategy: .providerNative
+            ),
+            inputs: AIInputCapabilities(
+                supportsImages: true,
+                supportsDocuments: false,
+                supportedImageMediaTypes: [
+                    AIImage.AIMediaType.jpeg.rawValue,
+                    AIImage.AIMediaType.png.rawValue,
+                    AIImage.AIMediaType.gif.rawValue,
+                    AIImage.AIMediaType.webp.rawValue,
+                ],
+                supportedDocumentMediaTypes: []
+            ),
+            tools: AIToolCapabilities(supportsParallelCalls: true, supportsForcedToolChoice: true),
+            streaming: AIStreamingCapabilities(includesUsageInStream: true),
+            embeddings: AIEmbeddingCapabilities(
+                supportsEmbeddings: true,
+                supportedInputKinds: [.text],
+                supportsBatchInputs: true,
+                supportsDimensionOverride: true,
+                maxInputsPerRequest: nil
+            )
+        )
     }
 }

@@ -34,10 +34,36 @@ public struct AnthropicProvider: AIProvider, Sendable {
         [
             .claude(.haiku45),
             .claude(.sonnet45),
+            .claude(.sonnet46),
+            .claude(.opus46),
         ]
     }
 
     public var capabilities: AIProviderCapabilities {
-        .default
+        AIProviderCapabilities(
+            instructions: AIInstructionCapabilities(defaultFormat: .topLevelSystemPrompt),
+            structuredOutput: AIStructuredOutputCapabilities(
+                supportsJSONMode: false,
+                supportsJSONSchema: true,
+                defaultStrategy: .providerNative
+            ),
+            inputs: AIInputCapabilities(
+                supportsImages: true,
+                supportsDocuments: true,
+                supportedImageMediaTypes: [
+                    AIImage.AIMediaType.jpeg.rawValue,
+                    AIImage.AIMediaType.png.rawValue,
+                    AIImage.AIMediaType.gif.rawValue,
+                    AIImage.AIMediaType.webp.rawValue,
+                ],
+                supportedDocumentMediaTypes: [
+                    AIDocument.AIMediaType.pdf.rawValue,
+                    AIDocument.AIMediaType.plainText.rawValue,
+                ]
+            ),
+            tools: AIToolCapabilities(supportsParallelCalls: true, supportsForcedToolChoice: true),
+            streaming: AIStreamingCapabilities(includesUsageInStream: true),
+            embeddings: .default
+        )
     }
 }

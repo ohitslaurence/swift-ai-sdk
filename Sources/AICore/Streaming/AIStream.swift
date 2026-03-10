@@ -18,17 +18,34 @@ public struct AIStream: AsyncSequence, Sendable {
     public func collect() async throws -> AIResponse {
         var identifier = UUID().uuidString
         var model = "unknown"
-        var text = ""
         var usage = AIUsage(inputTokens: 0, outputTokens: 0)
-        var finishReason = AIFinishReason.stop
+        var finishReason: AIFinishReason?
+        var sawEvent = false
+        var content: [CollectedContent] = []
+        var toolIndexes: [String: Int] = [:]
 
         for try await event in self {
+            sawEvent = true
+
             switch event {
             case .start(let id, let startedModel):
                 identifier = id
                 model = startedModel
             case .delta(.text(let delta)):
-                text += delta
+                if case .text(let existing) = content.last {
+                    content[content.count - 1] = .text(existing + delta)
+                } else {
+                    content.append(.text(delta))
+                }
+            case .delta(.toolInput(let id, let jsonDelta)):
+                guard let toolIndex = toolIndexes[id] else {
+                    continue
+                }
+
+                content[toolIndex].appendToolInput(jsonDelta)
+            case .toolUseStart(let id, let name):
+                toolIndexes[id] = content.count
+                content.append(.toolUse(id: id, name: name, jsonInput: ""))
             case .usage(let updatedUsage):
                 usage = updatedUsage
             case .finish(let reason):
@@ -36,9 +53,17 @@ public struct AIStream: AsyncSequence, Sendable {
             }
         }
 
+        guard let finishReason else {
+            if sawEvent {
+                throw AIError.streamInterrupted
+            }
+
+            throw AIError.noContentGenerated
+        }
+
         return AIResponse(
             id: identifier,
-            content: [.text(text)],
+            content: content.map { $0.contentValue },
             model: model,
             usage: usage,
             finishReason: finishReason
@@ -46,7 +71,7 @@ public struct AIStream: AsyncSequence, Sendable {
     }
 
     public var textStream: AsyncThrowingStream<String, any Error> {
-        AsyncThrowingStream { continuation in
+        AsyncThrowingStream<String, any Error>(String.self, bufferingPolicy: .unbounded) { continuation in
             let task = Task {
                 do {
                     for try await event in self {
@@ -55,10 +80,12 @@ public struct AIStream: AsyncSequence, Sendable {
                         }
                     }
                     continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: AIError.cancelled)
                 } catch let error as AIError {
                     continuation.finish(throwing: error)
                 } catch {
-                    continuation.finish(throwing: AIError.unknown(String(describing: error)))
+                    continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
                 }
             }
 
@@ -69,7 +96,7 @@ public struct AIStream: AsyncSequence, Sendable {
     }
 
     public var accumulatedText: AsyncThrowingStream<String, any Error> {
-        AsyncThrowingStream { continuation in
+        AsyncThrowingStream<String, any Error>(String.self, bufferingPolicy: .unbounded) { continuation in
             let task = Task {
                 var accumulated = ""
 
@@ -79,10 +106,12 @@ public struct AIStream: AsyncSequence, Sendable {
                         continuation.yield(accumulated)
                     }
                     continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: AIError.cancelled)
                 } catch let error as AIError {
                     continuation.finish(throwing: error)
                 } catch {
-                    continuation.finish(throwing: AIError.unknown(String(describing: error)))
+                    continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
                 }
             }
 
@@ -99,7 +128,8 @@ public struct AIStream: AsyncSequence, Sendable {
 
     public static func finished(text: String = "", model: String = "mock") -> AIStream {
         AIStream(
-            AsyncThrowingStream { continuation in
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
                 continuation.yield(.start(id: UUID().uuidString, model: model))
                 if !text.isEmpty {
                     continuation.yield(.delta(.text(text)))
@@ -112,41 +142,38 @@ public struct AIStream: AsyncSequence, Sendable {
 
     public static func failed(_ error: AIError) -> AIStream {
         AIStream(
-            AsyncThrowingStream { continuation in
+            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+                continuation in
                 continuation.finish(throwing: error)
             }
         )
     }
 }
 
-/// A streamed event.
-public enum AIStreamEvent: Sendable {
-    case start(id: String, model: String)
-    case delta(AIStreamDelta)
-    case usage(AIUsage)
-    case finish(AIFinishReason)
-}
-
-/// A streamed delta.
-public enum AIStreamDelta: Sendable {
+private enum CollectedContent {
     case text(String)
-}
+    case toolUse(id: String, name: String, jsonInput: String)
 
-/// Smooth streaming configuration.
-public struct SmoothStreaming: Sendable {
-    public enum ChunkMode: Sendable {
-        case word
-        case line
-        case character
+    mutating func appendToolInput(_ delta: String) {
+        guard case .toolUse(let id, let name, let jsonInput) = self else {
+            return
+        }
+
+        self = .toolUse(id: id, name: name, jsonInput: jsonInput + delta)
     }
 
-    public var delay: TimeInterval
-    public var mode: ChunkMode
-
-    public static let `default` = SmoothStreaming(delay: 0.01, mode: .word)
-
-    public init(delay: TimeInterval, mode: ChunkMode) {
-        self.delay = delay
-        self.mode = mode
+    var contentValue: AIContent {
+        switch self {
+        case .text(let value):
+            return .text(value)
+        case .toolUse(let id, let name, let jsonInput):
+            return .toolUse(
+                AIToolUse(
+                    id: id,
+                    name: name,
+                    input: Data(jsonInput.utf8)
+                )
+            )
+        }
     }
 }

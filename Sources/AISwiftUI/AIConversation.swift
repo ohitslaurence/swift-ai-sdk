@@ -56,7 +56,12 @@
                         self.error = error
                     }
                 } catch {
-                    self.error = .unknown(String(describing: error))
+                    self.error = .unknown(
+                        AIErrorContext(
+                            message: String(describing: error),
+                            underlyingType: String(reflecting: type(of: error))
+                        )
+                    )
                 }
 
                 isStreaming = false
