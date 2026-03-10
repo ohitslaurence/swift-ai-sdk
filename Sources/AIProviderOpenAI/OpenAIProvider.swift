@@ -1,7 +1,7 @@
 import AICore
 import Foundation
 
-/// OpenAI provider scaffold.
+/// OpenAI Chat Completions and Embeddings provider.
 public struct OpenAIProvider: AIProvider, Sendable {
     public let apiKey: String
     public let organization: String?
@@ -24,18 +24,68 @@ public struct OpenAIProvider: AIProvider, Sendable {
     }
 
     public func complete(_ request: AIRequest) async throws -> AIResponse {
-        _ = request
-        throw AIError.unsupportedFeature("OpenAI completions are not implemented yet")
+        let requestBuilder = OpenAIRequestBuilder(
+            apiKey: apiKey, organization: organization, configuration: configuration
+        )
+        let errorMapper = OpenAIErrorMapper()
+        let responseParser = OpenAIResponseParser()
+
+        return try await AITimeoutController.withTimeout(request.timeout.total, kind: .total) {
+            try await RetryExecutor.execute(policy: request.retryPolicy) { _ in
+                try await AITimeoutController.withTimeout(request.timeout.step, kind: .step) {
+                    let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: false)
+                    let data = try await performDataRequest(
+                        preparedRequest.urlRequest,
+                        model: request.model,
+                        errorMapper: errorMapper
+                    )
+
+                    return try responseParser.parse(data, warnings: preparedRequest.warnings)
+                }
+            }
+        }
     }
 
     public func stream(_ request: AIRequest) -> AIStream {
-        _ = request
-        return .failed(.unsupportedFeature("OpenAI streaming is not implemented yet"))
+        let requestBuilder = OpenAIRequestBuilder(
+            apiKey: apiKey, organization: organization, configuration: configuration
+        )
+        let errorMapper = OpenAIErrorMapper()
+        let streamParser = OpenAIStreamParser()
+
+        return RetryExecutor.executeStream(policy: request.retryPolicy, timeout: request.timeout) { _ in
+            let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: true)
+            let streamResponse = try await performStreamRequest(
+                preparedRequest.urlRequest,
+                model: request.model,
+                errorMapper: errorMapper
+            )
+
+            return streamParser.parse(streamResponse, warnings: preparedRequest.warnings)
+        }
     }
 
     public func embed(_ request: AIEmbeddingRequest) async throws -> AIEmbeddingResponse {
-        _ = request
-        throw AIError.unsupportedFeature("OpenAI embeddings are not implemented yet")
+        let requestBuilder = OpenAIEmbeddingRequestBuilder(
+            apiKey: apiKey, organization: organization, configuration: configuration
+        )
+        let errorMapper = OpenAIErrorMapper()
+        let responseParser = OpenAIEmbeddingResponseParser()
+
+        return try await AITimeoutController.withTimeout(request.timeout.total, kind: .total) {
+            try await RetryExecutor.execute(policy: request.retryPolicy) { _ in
+                try await AITimeoutController.withTimeout(request.timeout.step, kind: .step) {
+                    let urlRequest = try requestBuilder.prepareRequest(for: request)
+                    let data = try await performDataRequest(
+                        urlRequest,
+                        model: request.model,
+                        errorMapper: errorMapper
+                    )
+
+                    return try responseParser.parse(data)
+                }
+            }
+        }
     }
 
     public var availableModels: [AIModel] {
@@ -96,5 +146,64 @@ public struct OpenAIProvider: AIProvider, Sendable {
                 maxInputsPerRequest: nil
             )
         )
+    }
+
+    private func performDataRequest(
+        _ request: URLRequest,
+        model: AIModel,
+        errorMapper: OpenAIErrorMapper
+    ) async throws -> Data {
+        let data: Data
+        let response: HTTPURLResponse
+
+        do {
+            (data, response) = try await configuration.transport.data(for: request)
+        } catch {
+            throw errorMapper.mapTransportError(error)
+        }
+
+        guard 200..<300 ~= response.statusCode else {
+            throw errorMapper.mapResponse(response: response, body: data, model: model)
+        }
+
+        return data
+    }
+
+    private func performStreamRequest(
+        _ request: URLRequest,
+        model: AIModel,
+        errorMapper: OpenAIErrorMapper
+    ) async throws -> AIHTTPStreamResponse {
+        let response: AIHTTPStreamResponse
+
+        do {
+            response = try await configuration.transport.stream(for: request)
+        } catch {
+            throw errorMapper.mapTransportError(error)
+        }
+
+        guard 200..<300 ~= response.response.statusCode else {
+            let body = try await collectBody(response.body, errorMapper: errorMapper)
+            throw errorMapper.mapResponse(response: response.response, body: body, model: model)
+        }
+
+        return response
+    }
+
+    private func collectBody(
+        _ body: AsyncThrowingStream<Data, any Error>,
+        errorMapper: OpenAIErrorMapper
+    ) async throws -> Data {
+        var collectedBody = Data()
+
+        do {
+            for try await chunk in body {
+                collectedBody.append(chunk)
+            }
+        } catch {
+            throw errorMapper.mapTransportError(error)
+        }
+
+        return collectedBody
     }
 }

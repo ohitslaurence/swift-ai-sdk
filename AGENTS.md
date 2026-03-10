@@ -22,6 +22,10 @@ Fight entropy. Leave the codebase better than you found it.
 
 Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
 
+## Settled Decisions — Do Not Reopen
+
+- `AIStream` and `AIHTTPStreamResponse.body` use `AsyncThrowingStream<..., any Error>` internally. This is a Swift stdlib/concurrency constraint, not a bug. All error paths normalize to `AIError` at runtime. Do not flag this as an issue, propose fixing it, or mention it in status reports. It will resolve naturally if Swift ships sendable typed-throw iterators in a future version.
+
 ## Notes From Spec Review
 
 - `AIRequest.systemPrompt` is the canonical instruction channel. Do not model system turns as `AIMessage` values.
