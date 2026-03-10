@@ -17,4 +17,31 @@ public struct SmoothStreaming: Sendable, Equatable {
         self.delay = delay
         self.mode = mode
     }
+
+    /// Split text into chunks according to the given mode.
+    /// Returns an array where the last element is the incomplete remainder (possibly empty).
+    static func split(_ text: String, mode: ChunkMode) -> [String] {
+        switch mode {
+        case .character:
+            return text.map(String.init) + [""]
+        case .word:
+            return splitByBoundary(text, separator: " ")
+        case .line:
+            return splitByBoundary(text, separator: "\n")
+        }
+    }
+
+    private static func splitByBoundary(_ text: String, separator: Character) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        for char in text {
+            current.append(char)
+            if char == separator {
+                chunks.append(current)
+                current = ""
+            }
+        }
+        chunks.append(current)
+        return chunks
+    }
 }
