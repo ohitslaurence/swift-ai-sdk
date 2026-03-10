@@ -31,13 +31,8 @@ public struct AITool: Sendable {
         description: String,
         needsApproval: Bool = false,
         handler: @escaping @Sendable (Input) async throws -> Output
-    ) -> AITool {
-        let schema: AIJSONSchema
-        do {
-            schema = try Input.jsonSchema
-        } catch {
-            schema = .object(properties: [:], required: [])
-        }
+    ) throws -> AITool {
+        let schema = try Input.jsonSchema
 
         return AITool(
             name: name,

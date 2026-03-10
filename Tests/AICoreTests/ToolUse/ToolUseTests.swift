@@ -550,7 +550,7 @@ struct ToolUseTests {
 
     @Test("AITool.define derives schema from Input.jsonSchema")
     func defineDerivesSchema() throws {
-        let tool = AITool.define(
+        let tool = try AITool.define(
             name: "weather",
             description: "Gets weather"
         ) { (input: WeatherInput) async throws -> String in
@@ -572,7 +572,7 @@ struct ToolUseTests {
 
     @Test("AITool.define JSON-encodes non-string outputs")
     func defineJSONEncodesOutput() async throws {
-        let tool = AITool.define(
+        let tool = try AITool.define(
             name: "compute",
             description: "Computes"
         ) { (_: SimpleInput) async throws -> ComputeOutput in
@@ -585,7 +585,7 @@ struct ToolUseTests {
         #expect(output.contains("42"))
         #expect(output.contains("answer"))
 
-        let stringTool = AITool.define(
+        let stringTool = try AITool.define(
             name: "echo",
             description: "Echoes"
         ) { (input: SimpleInput) async throws -> String in
@@ -821,10 +821,11 @@ struct ToolUseTests {
 
         do {
             _ = try await task.value
+            Issue.record("Expected cancellation error, but task completed normally")
         } catch is CancellationError {
             // Expected
         } catch {
-            // Also acceptable — tool may have produced result before cancel propagated
+            // Other errors acceptable — cancellation may surface as AIError.cancelled etc.
         }
     }
 
@@ -1055,10 +1056,11 @@ struct ToolUseTests {
 
         do {
             _ = try await task.value
+            Issue.record("Expected cancellation error, but task completed normally")
         } catch is CancellationError {
             // Expected — cancellation during approval
         } catch {
-            // Also acceptable
+            // Other errors acceptable — cancellation may surface as AIError.cancelled etc.
         }
     }
 }
