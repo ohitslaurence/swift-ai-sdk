@@ -1,0 +1,33 @@
+name: Docs
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+      - name: Build documentation
+        run: |
+          swift build
+          SDK_PATH="$(xcrun --show-sdk-path)"
+          mkdir -p .build/symbol-graphs .build/docc-output
+          xcrun swift-symbolgraph-extract \
+            -module-name AICore \
+            -I .build/arm64-apple-macosx/debug/Modules \
+            -output-dir .build/symbol-graphs \
+            -pretty-print \
+            -minimum-access-level public \
+            -target arm64-apple-macosx14.0 \
+            -sdk "$SDK_PATH"
+          xcrun docc convert Sources/AICore/Documentation.docc \
+            --fallback-display-name AICore \
+            --fallback-bundle-identifier com.example.aicore \
+            --fallback-bundle-version 0.1.0 \
+            --additional-symbol-graph-dir .build/symbol-graphs \
+            --output-path .build/docc-output

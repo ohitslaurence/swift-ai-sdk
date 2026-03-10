@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "indentation": { "spaces": 4 },
+  "lineLength": 120,
+  "indentConditionalCompilationBlocks": true,
+  "indentSwitchCaseLabels": false,
+  "lineBreakBeforeControlFlowKeywords": false,
+  "lineBreakBeforeEachArgument": false,
+  "lineBreakBeforeEachGenericRequirement": false,
+  "maximumBlankLines": 1,
+  "respectsExistingLineBreaks": true,
+  "prioritizeKeepingFunctionOutputTogether": false,
+  "rules": {
+    "AllPublicDeclarationsHaveDocumentation": false,
+    "AlwaysUseLiteralForEmptyCollectionInit": false,
+    "AlwaysUseLowerCamelCase": true,
+    "FileScopedDeclarationPrivacy": true,
+    "FullyIndirectEnum": true,
+    "NeverForceUnwrap": true,
+    "NeverUseForceTry": true,
+    "NeverUseImplicitlyUnwrappedOptionals": true,
+    "OrderedImports": true,
+    "UseLetInEveryBoundCaseVariable": false,
+    "ValidateDocumentationComments": true
+  },
+  "spacesAroundRangeFormationOperators": false
+}
