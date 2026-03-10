@@ -1,11 +1,13 @@
 #if canImport(SwiftUI)
     import SwiftUI
 
-    /// A simple streaming text view.
+    /// A simple streaming text view with an optional blinking cursor.
     public struct StreamingText: View {
         public let state: AIStreamState
         public var showCursor: Bool
         public var font: Font
+
+        @State private var cursorVisible = true
 
         public init(_ state: AIStreamState, showCursor: Bool = true, font: Font = .body) {
             self.state = state
@@ -14,8 +16,25 @@
         }
 
         public var body: some View {
-            Text(state.text + ((showCursor && state.isStreaming) ? "|" : ""))
+            Text(state.text + cursorSuffix)
                 .font(font)
+                .onChange(of: state.isStreaming) { _, isStreaming in
+                    cursorVisible = isStreaming
+                }
+                .task(id: state.isStreaming) {
+                    guard state.isStreaming, showCursor else { return }
+                    cursorVisible = true
+                    while !Task.isCancelled, state.isStreaming {
+                        try? await Task.sleep(nanoseconds: 530_000_000)
+                        guard !Task.isCancelled, state.isStreaming else { break }
+                        cursorVisible.toggle()
+                    }
+                    cursorVisible = false
+                }
+        }
+
+        private var cursorSuffix: String {
+            (showCursor && state.isStreaming && cursorVisible) ? "|" : ""
         }
     }
 #endif

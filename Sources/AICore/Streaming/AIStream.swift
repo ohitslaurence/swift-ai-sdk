@@ -145,8 +145,74 @@ public struct AIStream: AsyncSequence, Sendable {
     }
 
     public func smooth(_ config: SmoothStreaming = .default) -> AIStream {
-        _ = config
-        return self
+        let source = self
+        let stream = AsyncThrowingStream<AIStreamEvent, any Error>(
+            AIStreamEvent.self,
+            bufferingPolicy: .unbounded
+        ) { continuation in
+            let task = Task {
+                var buffer = ""
+
+                func flushBuffer() {
+                    guard !buffer.isEmpty else { return }
+                    continuation.yield(.delta(.text(buffer)))
+                    buffer = ""
+                }
+
+                func emitChunks(_ text: String) async {
+                    buffer += text
+                    let chunks = SmoothStreaming.split(buffer, mode: config.mode)
+                    guard chunks.count > 1 else { return }
+                    for chunk in chunks.dropLast() {
+                        continuation.yield(.delta(.text(chunk)))
+                        do {
+                            try await Task.sleep(
+                                nanoseconds: UInt64(config.delay * 1_000_000_000)
+                            )
+                        } catch {
+                            flushBuffer()
+                            return
+                        }
+                    }
+                    buffer = chunks.last ?? ""
+                }
+
+                do {
+                    for try await event in source {
+                        switch event {
+                        case .delta(.text(let text)):
+                            await emitChunks(text)
+                        case .finish:
+                            flushBuffer()
+                            continuation.yield(event)
+                        default:
+                            continuation.yield(event)
+                        }
+                    }
+                    flushBuffer()
+                    continuation.finish()
+                } catch is CancellationError {
+                    flushBuffer()
+                    continuation.finish(throwing: AIError.cancelled)
+                } catch let error as AIError {
+                    flushBuffer()
+                    continuation.finish(throwing: error)
+                } catch {
+                    flushBuffer()
+                    continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+
+        return AIStream(
+            wrapping: stream,
+            applyLifecyclePolicy: false,
+            warningProvider: warningProvider
+        )
     }
 
     public static func finished(text: String = "", model: String = "mock") -> AIStream {
