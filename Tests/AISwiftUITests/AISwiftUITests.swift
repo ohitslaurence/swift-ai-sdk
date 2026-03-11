@@ -509,12 +509,16 @@
 
             let firstAssistant = try XCTUnwrap(assistantMessages.first)
             XCTAssertTrue(firstAssistant.content.contains(.text("thinking")))
-            XCTAssertTrue(firstAssistant.content.contains { content in
-                if case .toolUse = content {
-                    return true
+
+            XCTAssertTrue(
+                firstAssistant.content.contains { content in
+                    if case .toolUse = content {
+                        return true
+                    }
+
+                    return false
                 }
-                return false
-            })
+            )
         }
 
         // Test 18: approval and repair handlers are forwarded
