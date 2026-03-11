@@ -121,6 +121,21 @@ struct TelemetryProvider: AIProvider, Sendable {
                     kind: .requestFailed(error: error, attempt: 1, metrics: metrics)
                 ))
             throw error
+        } catch {
+            let aiError = AIError.unknown(AIErrorContext(error))
+            let totalDuration = clock.now - startInstant
+            let metrics =
+                configuration.includeMetrics
+                ? AITelemetryMetrics(totalDuration: totalDuration)
+                : nil
+            await emit(
+                AITelemetryEvent(
+                    timestamp: Date(),
+                    operationID: operationID,
+                    operationKind: .completion,
+                    kind: .requestFailed(error: aiError, attempt: 1, metrics: metrics)
+                ))
+            throw aiError
         }
     }
 
@@ -326,6 +341,21 @@ struct TelemetryProvider: AIProvider, Sendable {
                     kind: .requestFailed(error: error, attempt: 1, metrics: metrics)
                 ))
             throw error
+        } catch {
+            let aiError = AIError.unknown(AIErrorContext(error))
+            let totalDuration = clock.now - startInstant
+            let metrics =
+                configuration.includeMetrics
+                ? AITelemetryMetrics(totalDuration: totalDuration)
+                : nil
+            await emit(
+                AITelemetryEvent(
+                    timestamp: Date(),
+                    operationID: operationID,
+                    operationKind: .embedding,
+                    kind: .requestFailed(error: aiError, attempt: 1, metrics: metrics)
+                ))
+            throw aiError
         }
     }
 

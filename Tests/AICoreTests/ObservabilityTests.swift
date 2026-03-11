@@ -35,9 +35,9 @@ actor RecordingSink: AITelemetrySink {
     }
 }
 
-// MARK: - FailingSink
+// MARK: - CountingSink
 
-actor FailingSink: AITelemetrySink {
+actor CountingSink: AITelemetrySink {
     private(set) var recordCount = 0
 
     func record(_ event: AITelemetryEvent) async {
@@ -158,11 +158,11 @@ final class ObservabilityTests: XCTestCase {
         XCTAssertEqual(kinds.last, "requestFailed")
     }
 
-    // MARK: 5. Retry backoff emits .retryScheduled before the next attempt starts.
+    // MARK: 5. Single-attempt failure emits requestFailed with error and attempt info.
 
-    func test_retryScheduled_emittedBeforeNextAttempt() async throws {
-        // When a provider call fails with a retryable error, the TelemetryProvider
-        // emits requestStarted then requestFailed with the error and attempt info.
+    func test_singleAttemptFailure_emitsRequestFailedWithAttemptInfo() async throws {
+        // When a provider call fails, the TelemetryProvider emits requestStarted
+        // then requestFailed with the error and attempt info.
         let provider = MockProvider(
             completionHandler: { _ in
                 throw AIError.rateLimited(retryAfter: 0.5)
@@ -539,7 +539,7 @@ final class ObservabilityTests: XCTestCase {
                 AIResponse(id: "resp", content: [.text("ok")], model: "mock")
             }
         )
-        let failingSink = FailingSink()
+        let failingSink = CountingSink()
         let recordingSink = RecordingSink()
         let observed = withTelemetry(
             provider,
