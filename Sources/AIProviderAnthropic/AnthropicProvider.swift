@@ -54,7 +54,12 @@ public struct AnthropicProvider: AIProvider, Sendable {
                 errorMapper: errorMapper
             )
 
-            return streamParser.parse(streamResponse, warnings: preparedRequest.warnings)
+            return streamParser.parse(
+                streamResponse,
+                model: request.model,
+                errorMapper: errorMapper,
+                warnings: preparedRequest.warnings
+            )
         }
     }
 

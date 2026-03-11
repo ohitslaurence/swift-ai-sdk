@@ -2,6 +2,10 @@
 
 > First real provider implementation. Proves the core protocols work against a real API.
 
+## Review History
+
+- 2026-03-11: Deep implementation audit completed. Reconciled public Claude aliases with the shipped API, tightened malformed response and stream decoding, added explicit SSE error-event mapping, expanded `Retry-After` handling, and added focused regression coverage.
+
 ## Goal
 
 Implement `AnthropicProvider` conforming to `AIProvider`, covering the Anthropic Messages API with streaming, tool use, vision, documents, and native structured output.
@@ -32,11 +36,16 @@ public struct AnthropicProvider: AIProvider, Sendable {
 
 extension AIModel {
     public enum Claude {
-        case opus4_6
-        case sonnet4_6
-        case sonnet4_5
-        case haiku4_5
+        case opus46
+        case sonnet46
+        case sonnet45
+        case haiku45
         case custom(String)
+
+        public static var opus4_6: Self { get }
+        public static var sonnet4_6: Self { get }
+        public static var sonnet4_5: Self { get }
+        public static var haiku4_5: Self { get }
 
         public var model: AIModel { get }
     }
@@ -132,7 +141,7 @@ Rules:
 
 1. `AIResponseFormat.jsonSchema` uses native `output_config.format` first.
 2. If the provider receives `AIResponseFormat.json` on ordinary `complete(_:)` / `stream(_:)` calls, the Anthropic request builder normalizes it to `.jsonSchema(.anyJSON)` before serializing the request.
-3. Tool-call fallback and prompt-injection fallback still exist, but only when native structured output is explicitly disabled or unavailable for a custom deployment.
+3. Anthropic request building currently always forwards native structured-output fields when JSON output is requested; unsupported official model IDs and custom Anthropic-compatible deployments surface warnings instead of silently falling back.
 4. Even with native structured output, the SDK still validates and decodes locally.
 
 ### Embeddings
@@ -163,6 +172,7 @@ Notes:
 - The parser must buffer the latest `stop_reason` from `message_delta` and emit a single `.finish` event when the message stops.
 - Stream failures are surfaced by throwing `AIError`; there is no `.error` event.
 - If the SSE connection drops after `.start` or any `.delta` and no terminal `message_stop` arrives, surface `AIError.streamInterrupted`.
+- SSE `error` events must be mapped into the corresponding `AIError` immediately instead of degrading into `AIError.streamInterrupted`.
 
 ### Finish Reason Mapping
 
@@ -213,7 +223,7 @@ Notes:
 The provider does not implement retry logic itself. Its job is to:
 
 1. Map HTTP and transport failures into clean `AIError` values.
-2. Parse `retry-after` and `retry-after-ms` headers into `.rateLimited(retryAfter:)` when present.
+2. Parse `retry-after-ms` plus `retry-after` second or HTTP-date values into `.rateLimited(retryAfter:)` when present.
 3. Surface streaming errors immediately after the first emitted event - no hidden mid-stream replay.
 4. Propagate task cancellation through active transport work and pending retry backoff without emitting extra stream events.
 
@@ -274,6 +284,11 @@ Use `MockTransport` by default. Reserve `MockURLProtocol` for `URLSessionTranspo
 19. `embed(_:)` fails with `AIError.unsupportedFeature` without making a transport call.
 20. Interrupted SSE streams surface `AIError.streamInterrupted` after partial output.
 21. Published input capabilities include the supported Anthropic image and document MIME types.
+22. Compatibility aliases like `.claude(.sonnet4_5)` resolve to the current shipped model IDs.
+23. HTTP-date `Retry-After` headers are parsed into `.rateLimited(retryAfter:)`.
+24. Malformed text and `tool_use` response blocks fail with `AIError.decodingError` instead of silently synthesizing empty values.
+25. SSE `error` events surface mapped `AIError` values instead of `AIError.streamInterrupted`.
+26. Malformed `text_delta` payloads fail with `AIError.decodingError` instead of emitting empty text.
 
 ## Acceptance Criteria
 
@@ -281,7 +296,7 @@ Use `MockTransport` by default. Reserve `MockURLProtocol` for `URLSessionTranspo
 - [ ] Non-streaming completions work with text, vision, documents, tool use, and native structured output.
 - [ ] Streaming works with text deltas, tool-input deltas, usage, and finish reasons.
 - [ ] Tool transcript replay is explicitly defined and matches Anthropic's content-block model.
-- [ ] Native structured output uses `output_config.format` before any fallback path.
+- [ ] Native structured output uses `output_config.format`, with compatibility warnings rather than silent fallback when support is unsupported or unverified.
 - [ ] `.json` requests are normalized into schema-backed JSON generation rather than prompt injection by default.
 - [ ] All HTTP and transport failures map to `AIError` cases.
 - [ ] `AIModel.claude(...)` resolves to current model IDs and still allows `custom(String)`.
@@ -291,4 +306,4 @@ Use `MockTransport` by default. Reserve `MockURLProtocol` for `URLSessionTranspo
 - [ ] Custom headers and custom transport are supported.
 - [ ] Embeddings are explicitly unsupported rather than silently ignored.
 - [ ] Input capabilities advertise supported image and document MIME types.
-- [ ] All 21 test cases pass.
+- [ ] Regression coverage includes malformed payload handling, SSE error events, and header-based retry guidance.

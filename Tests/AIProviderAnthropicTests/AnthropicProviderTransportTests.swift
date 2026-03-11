@@ -510,6 +510,49 @@ final class AnthropicProviderTransportTests: XCTestCase {
         }
     }
 
+    func test_complete_parsesHTTPDateRetryAfterHeader() async {
+        let provider = AnthropicProvider(
+            apiKey: "test-key",
+            transport: MockTransport(
+                dataHandler: { _ in
+                    (
+                        Data("{\"error\": {\"message\": \"slow down\"}}".utf8),
+                        makeHTTPResponse(
+                            statusCode: 429,
+                            headers: [
+                                "retry-after": makeHTTPDateString(secondsFromNow: 120)
+                            ]
+                        )
+                    )
+                },
+                streamHandler: { _ in
+                    throw AIError.unsupportedFeature("unused")
+                }
+            )
+        )
+
+        do {
+            _ = try await provider.complete(
+                AIRequest(
+                    model: .claude(.sonnet45),
+                    messages: [.user("Hello")],
+                    retryPolicy: .none
+                )
+            )
+            XCTFail("Expected rate limit error")
+        } catch let error as AIError {
+            guard case .rateLimited(let retryAfter?) = error else {
+                XCTFail("Expected rate limit error with retry-after, got \(error)")
+                return
+            }
+
+            XCTAssertGreaterThan(retryAfter, 110)
+            XCTAssertLessThan(retryAfter, 121)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func test_complete_mapsRemainingHTTPErrorVariants() async {
         struct Case: Sendable {
             let statusCode: Int
@@ -620,6 +663,76 @@ final class AnthropicProviderTransportTests: XCTestCase {
             }
         } catch {
             XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_complete_rejectsMalformedResponseContentBlocks() async {
+        struct Case: Sendable {
+            let body: Data
+            let expectedMessage: String
+        }
+
+        let cases = [
+            Case(
+                body: Data(
+                    """
+                    {
+                      "id": "msg_bad_text",
+                      "model": "claude-sonnet-4-5",
+                      "content": [{"type": "text"}],
+                      "stop_reason": "end_turn",
+                      "stop_sequence": null,
+                      "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }
+                    """.utf8
+                ),
+                expectedMessage: "Anthropic text blocks must include text"
+            ),
+            Case(
+                body: Data(
+                    """
+                    {
+                      "id": "msg_bad_tool_use",
+                      "model": "claude-sonnet-4-5",
+                      "content": [{"type": "tool_use", "id": "tool_1", "name": "lookup_weather"}],
+                      "stop_reason": "tool_use",
+                      "stop_sequence": null,
+                      "usage": {"input_tokens": 1, "output_tokens": 1}
+                    }
+                    """.utf8
+                ),
+                expectedMessage: "Anthropic tool_use blocks must include an id, name, and input"
+            ),
+        ]
+
+        for testCase in cases {
+            let provider = AnthropicProvider(
+                apiKey: "test-key",
+                transport: MockTransport(
+                    dataHandler: { _ in
+                        (testCase.body, makeHTTPResponse(statusCode: 200))
+                    },
+                    streamHandler: { _ in
+                        throw AIError.unsupportedFeature("unused")
+                    }
+                )
+            )
+
+            do {
+                _ = try await provider.complete(
+                    AIRequest(model: .claude(.sonnet45), messages: [.user("Hello")])
+                )
+                XCTFail("Expected decoding error")
+            } catch let error as AIError {
+                guard case .decodingError(let context) = error else {
+                    XCTFail("Expected decoding error, got \(error)")
+                    continue
+                }
+
+                XCTAssertEqual(context.message, testCase.expectedMessage)
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
         }
     }
 
@@ -775,6 +888,97 @@ final class AnthropicProviderTransportTests: XCTestCase {
                 XCTFail("Expected decoding error, got \(error)")
                 return
             }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_stream_mapsErrorEventsAfterStreamStart() async {
+        let provider = AnthropicProvider(
+            apiKey: "test-key",
+            transport: MockTransport(
+                dataHandler: { _ in
+                    throw AIError.unsupportedFeature("unused")
+                },
+                streamHandler: { _ in
+                    AIHTTPStreamResponse(
+                        response: makeHTTPResponse(statusCode: 200),
+                        body: AsyncThrowingStream<Data, any Error>(Data.self, bufferingPolicy: .unbounded) {
+                            continuation in
+                            continuation.yield(
+                                Data(
+                                    """
+                                    event: message_start
+                                    data: {"message":{"id":"msg_stream_error","model":"claude-sonnet-4-5"}}
+
+                                    event: error
+                                    data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+                                    """.utf8
+                                )
+                            )
+                            continuation.finish()
+                        }
+                    )
+                }
+            )
+        )
+
+        do {
+            _ = try await provider.stream(
+                AIRequest(model: .claude(.sonnet45), messages: [.user("Hello")], retryPolicy: .none)
+            ).collect()
+            XCTFail("Expected stream error")
+        } catch let error as AIError {
+            XCTAssertEqual(error, .serverError(statusCode: 529, message: "Overloaded"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_stream_rejectsMalformedTextDeltaPayload() async {
+        let provider = AnthropicProvider(
+            apiKey: "test-key",
+            transport: MockTransport(
+                dataHandler: { _ in
+                    throw AIError.unsupportedFeature("unused")
+                },
+                streamHandler: { _ in
+                    AIHTTPStreamResponse(
+                        response: makeHTTPResponse(statusCode: 200),
+                        body: AsyncThrowingStream<Data, any Error>(Data.self, bufferingPolicy: .unbounded) {
+                            continuation in
+                            continuation.yield(
+                                Data(
+                                    """
+                                    event: message_start
+                                    data: {"message":{"id":"msg_bad_delta","model":"claude-sonnet-4-5"}}
+
+                                    event: content_block_delta
+                                    data: {"index":0,"delta":{"type":"text_delta"}}
+
+                                    """.utf8
+                                )
+                            )
+                            continuation.finish()
+                        }
+                    )
+                }
+            )
+        )
+
+        do {
+            _ = try await provider.stream(
+                AIRequest(model: .claude(.sonnet45), messages: [.user("Hello")], retryPolicy: .none)
+            ).collect()
+            XCTFail("Expected decoding error")
+        } catch let error as AIError {
+            guard case .decodingError(let context) = error else {
+                XCTFail("Expected decoding error, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(context.message, "Anthropic text deltas must include text")
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
@@ -1601,6 +1805,14 @@ private func makeTextResponseData(id: String, text: String) -> Data {
         }
         """.utf8
     )
+}
+
+private func makeHTTPDateString(secondsFromNow: TimeInterval) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss 'GMT'"
+    return formatter.string(from: Date(timeIntervalSinceNow: secondsFromNow))
 }
 
 private func requestJSONObject(from request: URLRequest) throws -> [String: Any] {

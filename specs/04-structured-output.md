@@ -177,7 +177,7 @@ The retry prompt must be explicit and stable:
 ### Native Provider Behavior
 
 - **OpenAI Chat Completions**: use native `response_format` JSON Schema support. Still decode locally because responses may still be incomplete, refused, or truncated.
-- **Anthropic Messages**: use native `output_config.format` JSON Schema support first. If the deployment disables it, fall back to synthetic tool-call extraction.
+- **Anthropic Messages**: use native `output_config.format` JSON Schema support. Unsupported official model IDs and custom Anthropic-compatible deployments currently surface warnings rather than automatically switching to a fallback strategy.
 - **Other providers**: use capability-driven fallback (`toolCallFallback` or `promptInjection`).
 
 ### Synthetic Tool-Call Fallback
