@@ -122,21 +122,84 @@ let response = try await provider.complete(
 | `AIProviderAnthropic` | Anthropic Messages API provider |
 | `AISwiftUI` | SwiftUI observable state types for chat interfaces |
 
-## Development Status
+### Structured Output
 
-| Spec | Status |
-|------|--------|
-| 00 — Package scaffold | Done |
-| 01 — Core protocols | Done |
-| 02 — Anthropic provider | Done |
-| 03 — OpenAI provider | Done |
-| 04 — Structured output | Planned |
-| 05 — Tool use & agents | Planned |
-| 06 — SwiftUI integration | Planned |
-| 07 — Embeddings | Planned |
-| 08 — Observability | Planned |
-| 09 — Capability matrix | Planned |
-| 11 — Usage & token reporting | Planned |
+```swift
+struct MovieReview: AIStructured {
+    let title: String
+    let rating: Int
+    let summary: String
+}
+
+let result = try await provider.generate(
+    "Review the movie Inception",
+    schema: MovieReview.self,
+    model: .gpt(.gpt5Mini)
+)
+
+print(result.value.title)   // "Inception"
+print(result.value.rating)  // 9
+```
+
+### Agents
+
+```swift
+let agent = Agent(
+    provider: provider,
+    model: .gpt(.gpt5Mini),
+    systemPrompt: "You are a helpful assistant.",
+    tools: [weatherTool, searchTool]
+)
+
+let result = try await agent.run("What's the weather in London?")
+print(result.response.text)
+```
+
+### SwiftUI
+
+```swift
+import AI
+
+struct ChatView: View {
+    @State var conversation = AIConversation(
+        provider: OpenAIProvider(apiKey: "sk-..."),
+        model: .gpt(.gpt5Mini)
+    )
+
+    var body: some View {
+        VStack {
+            AIMessageList(conversation.messages,
+                          streamingText: conversation.currentStreamText)
+
+            Button("Send") {
+                conversation.send("Hello!")
+            }
+        }
+    }
+}
+```
+
+### Middleware
+
+```swift
+let provider = withMiddleware(
+    OpenAIProvider(apiKey: "sk-..."),
+    middleware: [
+        DefaultSettingsMiddleware(maxTokens: 1000, temperature: 0.7),
+        LoggingMiddleware { print($0) }
+    ]
+)
+```
+
+## Modules
+
+| Module | Description |
+|--------|-------------|
+| `AI` | Umbrella — re-exports all modules |
+| `AICore` | Provider-agnostic protocols, types, streaming, retry, timeout, transport |
+| `AIProviderOpenAI` | OpenAI Chat Completions & Embeddings provider |
+| `AIProviderAnthropic` | Anthropic Messages API provider |
+| `AISwiftUI` | SwiftUI observable state types for chat interfaces |
 
 ## Local Development
 
