@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-03-11
+
+### Fixed
+
+- **Release preflight** — CI and release tagging now run the same
+  `./Tools/release-preflight.sh` checks so release-only build failures are
+  caught before a tag is cut.
+- **AITestSupport release builds** — `AITestSupport` no longer depends on
+  `@testable import AICore`, preventing release builds from failing when the
+  support target is compiled outside a test-only context.
+
 ## [0.1.3] — 2026-03-11
 
 ### Fixed

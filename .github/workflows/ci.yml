@@ -19,7 +19,5 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_16.4.app
       - name: Swift version
         run: swift --version
-      - name: Build
-        run: swift build
-      - name: Test
-        run: swift test
+      - name: Release preflight
+        run: ./Tools/release-preflight.sh

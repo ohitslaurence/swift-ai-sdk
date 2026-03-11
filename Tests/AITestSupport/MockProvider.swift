@@ -1,4 +1,4 @@
-@testable import AICore
+import AICore
 
 /// Records provider calls for tests.
 public actor MockProviderRecorder {

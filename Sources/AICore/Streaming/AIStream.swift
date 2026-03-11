@@ -24,7 +24,7 @@ public struct AIStream: AsyncSequence, Sendable {
         self.init(wrapping: stream, applyLifecyclePolicy: true, warningProvider: { warnings })
     }
 
-    init(
+    package init(
         wrapping stream: AsyncThrowingStream<AIStreamEvent, any Error>,
         applyLifecyclePolicy: Bool,
         warningProvider: @escaping @Sendable () async -> [AIProviderWarning]
@@ -282,19 +282,21 @@ public struct AIStream: AsyncSequence, Sendable {
         }
     }
 
-    func responseWarnings() async -> [AIProviderWarning] {
+    package func responseWarnings() async -> [AIProviderWarning] {
         await warningProvider()
     }
 }
 
-actor AIStreamWarningStore {
+package actor AIStreamWarningStore {
     private var warnings: [AIProviderWarning] = []
 
-    func set(_ warnings: [AIProviderWarning]) {
+    package init() {}
+
+    package func set(_ warnings: [AIProviderWarning]) {
         self.warnings = warnings
     }
 
-    func get() -> [AIProviderWarning] {
+    package func get() -> [AIProviderWarning] {
         warnings
     }
 }

@@ -25,7 +25,7 @@ Fight entropy. Leave the codebase better than you found it.
 - The project uses [Semantic Versioning](https://semver.org/). While on `0.x`, minor bumps may include breaking changes.
 - Update `CHANGELOG.md` with every user-facing change under an `[Unreleased]` section. Follow [Keep a Changelog](https://keepachangelog.com/) format.
 - To cut a release: move the `[Unreleased]` entries into a new `[x.y.z]` section with the date, commit, tag, and push the tag. The `release.yml` GitHub Action builds, tests, and creates a GitHub Release with the changelog notes automatically.
-- Do not tag a release without confirming `swift build` and `swift test` pass locally first.
+- Do not tag a release without running `./Tools/release-preflight.sh` locally and confirming the same release-preflight workflow is green on the exact `main` commit being tagged.
 
 ## Model IDs — Verification Required
 
@@ -57,3 +57,4 @@ Use these as implementation references when designing protocol handling, UX flow
 - `AISwiftUI` observable state types are `@MainActor` reference types and are intentionally not blanket `Sendable`.
 - Swift 6 currently rejects racing `AsyncThrowingStream.Iterator.next()` inside a `@Sendable` timeout closure because the iterator is non-`Sendable`. Chunk-timeout enforcement needs a watchdog task/state approach instead of wrapping `next()` directly in `AITimeoutController.withTimeout(...)`.
 - Anthropic `output_config.format` structured outputs are GA and no longer require a beta header, but Anthropic currently documents official support only for Claude Opus 4.6/4.5, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5. Legacy official model IDs should warn rather than being treated as silently supported.
+- `AITestSupport` is a regular SwiftPM target, not a test target. It is compiled during release builds, so it must not use `@testable import` or rely on test-only visibility from `AICore`.
