@@ -10,6 +10,13 @@ extension AIModel {
         case gpt5
         case gpt5Mini
         case gpt5Nano
+        case gpt51
+        case gpt52
+        case gpt52Pro
+        case gpt5Codex
+        case gpt51Codex
+        case gpt51CodexMini
+        case gpt52Codex
         case o3
         case o3Mini
         case o4Mini
@@ -21,6 +28,18 @@ extension AIModel {
         public static var gpt4_1Mini: Self { .gpt41Mini }
         // swift-format-ignore: AlwaysUseLowerCamelCase
         public static var gpt4_1Nano: Self { .gpt41Nano }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_1: Self { .gpt51 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_2: Self { .gpt52 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_2Pro: Self { .gpt52Pro }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_1Codex: Self { .gpt51Codex }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_1CodexMini: Self { .gpt51CodexMini }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt5_2Codex: Self { .gpt52Codex }
 
         public var model: AIModel {
             switch self {
@@ -40,6 +59,20 @@ extension AIModel {
                 return AIModel("gpt-5-mini", provider: "openai")
             case .gpt5Nano:
                 return AIModel("gpt-5-nano", provider: "openai")
+            case .gpt51:
+                return AIModel("gpt-5.1", provider: "openai")
+            case .gpt52:
+                return AIModel("gpt-5.2", provider: "openai")
+            case .gpt52Pro:
+                return AIModel("gpt-5.2-pro", provider: "openai")
+            case .gpt5Codex:
+                return AIModel("gpt-5-codex", provider: "openai")
+            case .gpt51Codex:
+                return AIModel("gpt-5.1-codex", provider: "openai")
+            case .gpt51CodexMini:
+                return AIModel("gpt-5.1-codex-mini", provider: "openai")
+            case .gpt52Codex:
+                return AIModel("gpt-5.2-codex", provider: "openai")
             case .o3:
                 return AIModel("o3", provider: "openai")
             case .o3Mini:

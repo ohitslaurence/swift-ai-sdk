@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Tool execution loops** — Cancellation during approval waits or in-flight tool
+  execution no longer commits partial steps or synthesizes transcript-visible
+  cancellation results.
+- **Tool call repair** — Repair now triggers only for typed input decode failures,
+  preserving ordinary tool handler failures as transcript-visible error results
+  without unnecessary repair attempts.
+- **Streaming tool loops** — Stitched streams now preserve provider warnings,
+  keep specific stream errors when available after partial output, and avoid
+  silently dropping events under slow consumers.
+- **Usage accounting** — `AIToolResponse.totalUsage` now preserves detailed token
+  accounting across every completed tool step and the terminal response.
+- **SwiftUI tool replay** — `AIConversation` no longer commits a duplicate
+  assistant text turn before a tool-step transcript is appended.
+
+## [0.1.1] — 2026-03-11
+
+### Added
+
+- **OpenAI models** — GPT-5.1, GPT-5.2, GPT-5.2 Pro, and Codex variants
+  (gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5.2-codex).
+- **Anthropic models** — Claude Opus 4, Opus 4.1, Opus 4.5, Sonnet 4.
+- GPT-5.1, GPT-5.2, and GPT-5.2 Pro added to OpenAI reasoning model set
+  for correct `developer` message handling.
+
 ## [0.1.0] — 2026-03-11
 
 Initial release of the Swift AI SDK.
