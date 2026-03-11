@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SwiftUI tool replay** — `AIConversation` no longer commits a duplicate
   assistant text turn before a tool-step transcript is appended.
 
+## [0.1.2] — 2026-03-11
+
+### Fixed
+
+- **Anthropic model IDs** — `claude-opus-4` → `claude-opus-4-0` and
+  `claude-sonnet-4` → `claude-sonnet-4-0` to match actual API aliases.
+
+### Added
+
+- **OpenAI models** — gpt-5-pro, gpt-5.4, gpt-5.4-pro, gpt-5.1-codex-max,
+  gpt-5.3-codex, gpt-5.3-codex-spark, o1, o1-mini, o1-pro, o3-pro.
+- **Model sync tooling** — `Tools/sync-models.sh` diffs local model constants
+  against models.dev for verification.
+
 ## [0.1.1] — 2026-03-11
 
 ### Added
