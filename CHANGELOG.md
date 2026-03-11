@@ -33,24 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GPT-5.1, GPT-5.2, and GPT-5.2 Pro added to OpenAI reasoning model set
   for correct `developer` message handling.
 
-## [Unreleased]
-
-### Fixed
-
-- **Tool execution loops** — Cancellation during approval waits or in-flight tool
-  execution no longer commits partial steps or synthesizes transcript-visible
-  cancellation results.
-- **Tool call repair** — Repair now triggers only for typed input decode failures,
-  preserving ordinary tool handler failures as transcript-visible error results
-  without unnecessary repair attempts.
-- **Streaming tool loops** — Stitched streams now preserve provider warnings,
-  keep specific stream errors when available after partial output, and avoid
-  silently dropping events under slow consumers.
-- **Usage accounting** — `AIToolResponse.totalUsage` now preserves detailed token
-  accounting across every completed tool step and the terminal response.
-- **SwiftUI tool replay** — `AIConversation` no longer commits a duplicate
-  assistant text turn before a tool-step transcript is appended.
-
 ## [0.1.0] — 2026-03-11
 
 Initial release of the Swift AI SDK.

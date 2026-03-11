@@ -2,22 +2,26 @@ import AICore
 
 extension AIModel {
     public enum Claude: Sendable {
-        case opus4
+        case opus40
         case opus41
         case opus45
         case opus46
-        case sonnet4
+        case sonnet40
         case sonnet45
         case sonnet46
         case haiku45
         case custom(String)
 
         // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var opus4_0: Self { .opus40 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
         public static var opus4_1: Self { .opus41 }
         // swift-format-ignore: AlwaysUseLowerCamelCase
         public static var opus4_5: Self { .opus45 }
         // swift-format-ignore: AlwaysUseLowerCamelCase
         public static var opus4_6: Self { .opus46 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var sonnet4_0: Self { .sonnet40 }
         // swift-format-ignore: AlwaysUseLowerCamelCase
         public static var sonnet4_5: Self { .sonnet45 }
         // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -27,16 +31,16 @@ extension AIModel {
 
         public var model: AIModel {
             switch self {
-            case .opus4:
-                return AIModel("claude-opus-4", provider: "anthropic")
+            case .opus40:
+                return AIModel("claude-opus-4-0", provider: "anthropic")
             case .opus41:
                 return AIModel("claude-opus-4-1", provider: "anthropic")
             case .opus45:
                 return AIModel("claude-opus-4-5", provider: "anthropic")
             case .opus46:
                 return AIModel("claude-opus-4-6", provider: "anthropic")
-            case .sonnet4:
-                return AIModel("claude-sonnet-4", provider: "anthropic")
+            case .sonnet40:
+                return AIModel("claude-sonnet-4-0", provider: "anthropic")
             case .sonnet45:
                 return AIModel("claude-sonnet-4-5", provider: "anthropic")
             case .sonnet46:

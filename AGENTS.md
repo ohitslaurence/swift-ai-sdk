@@ -27,6 +27,18 @@ Fight entropy. Leave the codebase better than you found it.
 - To cut a release: move the `[Unreleased]` entries into a new `[x.y.z]` section with the date, commit, tag, and push the tag. The `release.yml` GitHub Action builds, tests, and creates a GitHub Release with the changelog notes automatically.
 - Do not tag a release without confirming `swift build` and `swift test` pass locally first.
 
+## Model IDs — Verification Required
+
+**Never invent, guess, or assume model IDs.** Every model constant in `OpenAIModels.swift` and `AnthropicModels.swift` must correspond to a real, verified API model ID. The source of truth is:
+
+1. The provider's official documentation (Anthropic docs, OpenAI docs).
+2. The [models.dev](https://models.dev) registry (`curl https://models.dev/api.json`) — use the `openai` and `anthropic` top-level provider keys, not third-party router entries.
+
+When adding or updating models:
+- Run `Tools/sync-models.sh` to see what models.dev lists for each provider.
+- Cross-reference against the provider's official docs before adding any model constant.
+- Never ship a model ID you haven't verified exists in at least one authoritative source.
+
 ## Reference Repos
 
 - Vercel AI SDK: https://github.com/vercel/ai
