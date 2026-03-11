@@ -256,6 +256,16 @@ The package includes DocC documentation for every module:
 - [Observability](Sources/AICore/Documentation.docc/Observability.md)
 - [Capability Matrix](Sources/AICore/Documentation.docc/CapabilityMatrix.md)
 
+## Example App
+
+The repo includes a runnable macOS chat app at `Examples/ChatApp/`. Open it in Xcode to try the SDK interactively:
+
+```bash
+open Examples/ChatApp/Package.swift
+```
+
+Paste your API key directly in the UI, pick a provider (OpenAI or Anthropic), select a model, and start chatting. Responses stream in real-time using `AIConversation`.
+
 ## Local Development
 
 ```bash
