@@ -123,7 +123,7 @@ struct OpenAIRequestBuilder {
             return false
         }
 
-        return message.localizedCaseInsensitiveContains("max_completion_tokens")
+        return message.lowercased().contains("max_completion_tokens")
     }
 
     private func isStopUnsupported(_ model: AIModel) -> Bool {

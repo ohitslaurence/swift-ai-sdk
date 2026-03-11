@@ -1493,7 +1493,7 @@ final class OpenAIStreamInterruptionTests: XCTestCase {
                 AIHTTPStreamResponse(
                     response: httpResponse(),
                     body: sseStream([
-                        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n",
+                        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n"
                     ])
                 )
             }

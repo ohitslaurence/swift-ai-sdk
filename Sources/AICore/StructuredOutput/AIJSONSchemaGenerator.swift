@@ -127,13 +127,25 @@ enum AIJSONSchemaGenerator {
 
     private static func inspectProperties(of type: any Decodable.Type) throws -> SchemaInspectionSnapshot {
         let inspection = SchemaInspection()
+        let probeContext = SchemaProbeContext(activeTypes: [ObjectIdentifier(type)])
 
         do {
-            _ = try type.init(from: SchemaProbeDecoder(inspection: inspection))
+            _ = try type.init(from: SchemaProbeDecoder(inspection: inspection, probeContext: probeContext))
+        } catch SchemaProbeError.recursiveType(let recursiveType) {
+            throw AIError.unsupportedFeature(
+                "Recursive type detected: \(recursiveType). Provide a manual jsonSchema override."
+            )
         } catch is SchemaProbeError {
             throw unsupportedShapeError(for: type)
         } catch {
             throw unsupportedShapeError(for: type)
+        }
+
+        if inspection.hasUncheckedConditionalKeys {
+            throw AIError.unsupportedFeature(
+                "Type \(type) uses conditional decoding that cannot be safely reflected. "
+                    + "Provide a manual jsonSchema override."
+            )
         }
 
         return inspection.snapshot()
@@ -160,24 +172,42 @@ private struct SchemaProperty {
 
 private final class SchemaInspection {
     private(set) var usedKeyedContainer = false
+    private var conditionallyCheckedKeys: Set<String> = []
+    private var nilCheckedKeys: Set<String> = []
     private var properties: [SchemaProperty] = []
+
+    var hasUncheckedConditionalKeys: Bool {
+        !conditionallyCheckedKeys.isEmpty
+    }
 
     func markKeyedContainerUsed() {
         usedKeyedContainer = true
     }
 
     func recordProperty(name: String, type: Any.Type, isOptional: Bool) {
+        conditionallyCheckedKeys.remove(name)
+        let inferredIsOptional = isOptional || nilCheckedKeys.remove(name) != nil
+
         if let existingIndex = properties.firstIndex(where: { $0.name == name }) {
             let existing = properties[existingIndex]
             properties[existingIndex] = SchemaProperty(
                 name: existing.name,
                 type: existing.type,
-                isOptional: existing.isOptional && isOptional
+                isOptional: existing.isOptional && inferredIsOptional
             )
             return
         }
 
-        properties.append(SchemaProperty(name: name, type: type, isOptional: isOptional))
+        properties.append(SchemaProperty(name: name, type: type, isOptional: inferredIsOptional))
+    }
+
+    func markConditionalKeyCheck(_ name: String) {
+        conditionallyCheckedKeys.insert(name)
+    }
+
+    func markNilCheck(_ name: String) {
+        conditionallyCheckedKeys.insert(name)
+        nilCheckedKeys.insert(name)
     }
 
     func snapshot() -> SchemaInspectionSnapshot {
@@ -187,26 +217,53 @@ private final class SchemaInspection {
 
 private enum SchemaProbeError: Error {
     case unsupportedContainerShape
+    case recursiveType(Any.Type)
+    case unsupportedPlaceholderType(Any.Type)
+}
+
+private struct SchemaProbeContext {
+    let activeTypes: Set<ObjectIdentifier>
+
+    init(activeTypes: Set<ObjectIdentifier>) {
+        self.activeTypes = activeTypes
+    }
+
+    init(activeTypes: [ObjectIdentifier]) {
+        self.activeTypes = Set(activeTypes)
+    }
+
+    func adding(_ type: Any.Type) -> Self {
+        var next = activeTypes
+        next.insert(ObjectIdentifier(type))
+        return SchemaProbeContext(activeTypes: next)
+    }
 }
 
 private final class SchemaProbeDecoder: Decoder {
     let inspection: SchemaInspection
+    let probeContext: SchemaProbeContext
     let codingPath: [any CodingKey]
     let userInfo: [CodingUserInfoKey: Any]
 
     init(
         inspection: SchemaInspection,
+        probeContext: SchemaProbeContext,
         codingPath: [any CodingKey] = [],
         userInfo: [CodingUserInfoKey: Any] = [:]
     ) {
         self.inspection = inspection
+        self.probeContext = probeContext
         self.codingPath = codingPath
         self.userInfo = userInfo
     }
 
     func container<Key: CodingKey>(keyedBy type: Key.Type) throws -> KeyedDecodingContainer<Key> {
         inspection.markKeyedContainerUsed()
-        let container = SchemaProbeKeyedContainer<Key>(inspection: inspection, codingPath: codingPath)
+        let container = SchemaProbeKeyedContainer<Key>(
+            inspection: inspection,
+            probeContext: probeContext,
+            codingPath: codingPath
+        )
         return KeyedDecodingContainer(container)
     }
 
@@ -221,22 +278,24 @@ private final class SchemaProbeDecoder: Decoder {
 
 private struct SchemaProbeKeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
     let inspection: SchemaInspection
+    let probeContext: SchemaProbeContext
     let codingPath: [any CodingKey]
 
     var allKeys: [Key] { [] }
 
     func contains(_ key: Key) -> Bool {
-        true
+        inspection.markConditionalKeyCheck(key.stringValue)
+        return true
     }
 
     func decodeNil(forKey key: Key) throws -> Bool {
-        inspection.recordProperty(name: key.stringValue, type: Optional<String>.self, isOptional: true)
-        return true
+        inspection.markNilCheck(key.stringValue)
+        return false
     }
 
     func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
         inspection.recordProperty(name: key.stringValue, type: type, isOptional: false)
-        return try SchemaPlaceholderFactory.value(for: type)
+        return try SchemaPlaceholderFactory.value(for: type, probeContext: probeContext)
     }
 
     func decodeIfPresent<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T? {
@@ -256,63 +315,67 @@ private struct SchemaProbeKeyedContainer<Key: CodingKey>: KeyedDecodingContainer
     }
 
     func superDecoder() throws -> any Decoder {
-        SchemaProbeDecoder(inspection: inspection, codingPath: codingPath)
+        SchemaProbeDecoder(inspection: inspection, probeContext: probeContext, codingPath: codingPath)
     }
 
     func superDecoder(forKey key: Key) throws -> any Decoder {
-        SchemaProbeDecoder(inspection: inspection, codingPath: codingPath + [key])
+        SchemaProbeDecoder(
+            inspection: inspection,
+            probeContext: probeContext,
+            codingPath: codingPath + [key]
+        )
     }
 }
 
 private enum SchemaPlaceholderFactory {
-    static func value<T: Decodable>(for type: T.Type) throws -> T {
+    static func value<T: Decodable>(for type: T.Type, probeContext: SchemaProbeContext) throws -> T {
         if type == String.self {
-            return "" as! T
+            return try cast("", as: type)
         }
         if type == Int.self {
-            return 0 as! T
+            return try cast(0, as: type)
         }
         if type == Int8.self {
-            return Int8(0) as! T
+            return try cast(Int8(0), as: type)
         }
         if type == Int16.self {
-            return Int16(0) as! T
+            return try cast(Int16(0), as: type)
         }
         if type == Int32.self {
-            return Int32(0) as! T
+            return try cast(Int32(0), as: type)
         }
         if type == Int64.self {
-            return Int64(0) as! T
+            return try cast(Int64(0), as: type)
         }
         if type == UInt.self {
-            return UInt(0) as! T
+            return try cast(UInt(0), as: type)
         }
         if type == UInt8.self {
-            return UInt8(0) as! T
+            return try cast(UInt8(0), as: type)
         }
         if type == UInt16.self {
-            return UInt16(0) as! T
+            return try cast(UInt16(0), as: type)
         }
         if type == UInt32.self {
-            return UInt32(0) as! T
+            return try cast(UInt32(0), as: type)
         }
         if type == UInt64.self {
-            return UInt64(0) as! T
+            return try cast(UInt64(0), as: type)
         }
         if type == Double.self {
-            return Double.zero as! T
+            return try cast(Double.zero, as: type)
         }
         if type == Float.self {
-            return Float.zero as! T
+            return try cast(Float.zero, as: type)
         }
         if type == Bool.self {
-            return false as! T
+            return try cast(false, as: type)
         }
         if type == Date.self {
-            return Date(timeIntervalSince1970: 0) as! T
+            return try cast(Date(timeIntervalSince1970: 0), as: type)
         }
         if type == Decimal.self {
-            return Decimal.zero as! T
+            return try cast(Decimal.zero, as: type)
         }
 
         if let optional = nilOptional(as: type) {
@@ -327,7 +390,25 @@ private enum SchemaPlaceholderFactory {
             return enumCase
         }
 
-        return try T(from: SchemaProbeDecoder(inspection: SchemaInspection()))
+        if probeContext.activeTypes.contains(ObjectIdentifier(type)) {
+            throw SchemaProbeError.recursiveType(type)
+        }
+
+        let nestedContext = probeContext.adding(type)
+        return try T(
+            from: SchemaProbeDecoder(
+                inspection: SchemaInspection(),
+                probeContext: nestedContext
+            )
+        )
+    }
+
+    private static func cast<T>(_ value: some Any, as type: T.Type) throws -> T {
+        guard let typedValue = value as? T else {
+            throw SchemaProbeError.unsupportedPlaceholderType(type)
+        }
+
+        return typedValue
     }
 
     private static func nilOptional<T: Decodable>(as type: T.Type) -> T? {
