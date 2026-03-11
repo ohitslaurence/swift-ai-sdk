@@ -6,6 +6,8 @@ import Foundation
 /// append assistant + tool result messages -> record AIToolStep -> evaluate stop
 /// conditions -> loop or return.
 enum AIToolExecution {
+    typealias ToolEventHandler = @Sendable (AIToolUse) async throws -> Void
+    typealias ToolResultHandler = @Sendable (AIToolResult) async throws -> Void
 
     /// Run the non-streaming tool execution loop.
     static func run(
@@ -18,8 +20,7 @@ enum AIToolExecution {
     ) async throws -> AIToolResponse {
         var currentRequest = request
         var steps: [AIToolStep] = []
-        var totalInput = 0
-        var totalOutput = 0
+        var totalUsage = AIUsageAccumulator()
 
         while true {
             try Task.checkCancellation()
@@ -31,14 +32,13 @@ enum AIToolExecution {
 
             let response = try await provider.complete(currentRequest)
 
-            totalInput += response.usage.inputTokens
-            totalOutput += response.usage.outputTokens
+            totalUsage.add(response.usage)
 
             guard response.finishReason == .toolUse else {
                 return AIToolResponse(
                     response: response,
                     steps: steps,
-                    totalUsage: AIUsage(inputTokens: totalInput, outputTokens: totalOutput),
+                    totalUsage: totalUsage.value ?? AIUsage(inputTokens: 0, outputTokens: 0),
                     stopReason: .modelStopped
                 )
             }
@@ -48,12 +48,12 @@ enum AIToolExecution {
                 return AIToolResponse(
                     response: response,
                     steps: steps,
-                    totalUsage: AIUsage(inputTokens: totalInput, outputTokens: totalOutput),
+                    totalUsage: totalUsage.value ?? AIUsage(inputTokens: 0, outputTokens: 0),
                     stopReason: .modelStopped
                 )
             }
 
-            let toolResults = await executeTools(
+            let toolResults = try await executeTools(
                 toolCalls: toolCalls,
                 tools: currentRequest.tools,
                 approvalHandler: approvalHandler,
@@ -80,7 +80,7 @@ enum AIToolExecution {
                 return AIToolResponse(
                     response: response,
                     steps: steps,
-                    totalUsage: AIUsage(inputTokens: totalInput, outputTokens: totalOutput),
+                    totalUsage: totalUsage.value ?? AIUsage(inputTokens: 0, outputTokens: 0),
                     stopReason: .conditionMet(matched.description)
                 )
             }
@@ -94,34 +94,47 @@ enum AIToolExecution {
         toolCalls: [AIToolUse],
         tools: [AITool],
         approvalHandler: (@Sendable (AIToolUse) async -> Bool)?,
-        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?
-    ) async -> [AIToolResult] {
+        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?,
+        onToolApprovalRequired: ToolEventHandler? = nil,
+        onToolExecuting: ToolEventHandler? = nil,
+        onToolResult: ToolResultHandler? = nil
+    ) async throws -> [AIToolResult] {
         let toolMap = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
 
-        let unorderedResults = await withTaskGroup(
+        return try await withThrowingTaskGroup(
             of: (Int, AIToolResult).self,
             returning: [AIToolResult].self
         ) { group in
             for (index, toolCall) in toolCalls.enumerated() {
                 group.addTask {
-                    let result = await executeSingleTool(
+                    let result = try await executeSingleTool(
                         toolCall: toolCall,
                         tool: toolMap[toolCall.name],
                         approvalHandler: approvalHandler,
-                        toolCallRepairHandler: toolCallRepairHandler
+                        toolCallRepairHandler: toolCallRepairHandler,
+                        onToolApprovalRequired: onToolApprovalRequired,
+                        onToolExecuting: onToolExecuting
                     )
+
+                    if let onToolResult {
+                        try await onToolResult(result)
+                    }
                     return (index, result)
                 }
             }
 
             var results = [(Int, AIToolResult)]()
-            for await pair in group {
-                results.append(pair)
+            do {
+                for try await pair in group {
+                    results.append(pair)
+                }
+            } catch {
+                group.cancelAll()
+                throw error
             }
+
             return results.sorted { $0.0 < $1.0 }.map(\.1)
         }
-
-        return unorderedResults
     }
 
     /// Execute a single tool call with approval and repair flows.
@@ -129,8 +142,10 @@ enum AIToolExecution {
         toolCall: AIToolUse,
         tool: AITool?,
         approvalHandler: (@Sendable (AIToolUse) async -> Bool)?,
-        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?
-    ) async -> AIToolResult {
+        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?,
+        onToolApprovalRequired: ToolEventHandler?,
+        onToolExecuting: ToolEventHandler?
+    ) async throws -> AIToolResult {
         guard let tool else {
             return AIToolResult(
                 toolUseId: toolCall.id,
@@ -140,6 +155,10 @@ enum AIToolExecution {
         }
 
         if tool.needsApproval {
+            if let onToolApprovalRequired {
+                try await onToolApprovalRequired(toolCall)
+            }
+
             guard let approvalHandler else {
                 return AIToolResult(
                     toolUseId: toolCall.id,
@@ -148,11 +167,9 @@ enum AIToolExecution {
                 )
             }
 
-            if Task.isCancelled { return makeCancelledResult(toolCall) }
-
+            try Task.checkCancellation()
             let approved = await approvalHandler(toolCall)
-
-            if Task.isCancelled { return makeCancelledResult(toolCall) }
+            try Task.checkCancellation()
 
             guard approved else {
                 return AIToolResult(
@@ -163,48 +180,76 @@ enum AIToolExecution {
             }
         }
 
+        if let onToolExecuting {
+            try await onToolExecuting(toolCall)
+        }
+
         do {
             let output = try await tool.handler(toolCall.input)
+            try Task.checkCancellation()
             return AIToolResult(toolUseId: toolCall.id, content: output)
-        } catch {
-            if let toolCallRepairHandler {
-                let errorContext = AIErrorContext(
-                    message: String(describing: error),
-                    underlyingType: String(reflecting: type(of: error))
-                )
-
-                if let repairedData = await toolCallRepairHandler(toolCall, errorContext) {
-                    do {
-                        let output = try await tool.handler(repairedData)
-                        return AIToolResult(toolUseId: toolCall.id, content: output)
-                    } catch {
-                        let repairErrorContext = AIErrorContext(
-                            message: String(describing: error),
-                            underlyingType: String(reflecting: type(of: error))
-                        )
-                        return AIToolResult(
-                            toolUseId: toolCall.id,
-                            content: repairErrorContext.message,
-                            isError: true
-                        )
-                    }
-                }
+        } catch is CancellationError {
+            throw AIError.cancelled
+        } catch let error as AIToolInputDecodingError {
+            return try await executeWithRepair(
+                toolCall: toolCall,
+                tool: tool,
+                errorContext: error.context,
+                toolCallRepairHandler: toolCallRepairHandler
+            )
+        } catch let error as AIError {
+            if error == .cancelled {
+                throw error
             }
 
-            let errorContext = AIErrorContext(
-                message: String(describing: error),
-                underlyingType: String(reflecting: type(of: error))
-            )
-            return AIToolResult(
-                toolUseId: toolCall.id,
-                content: errorContext.message,
-                isError: true
-            )
+            return makeErrorResult(toolCall: toolCall, context: error.context)
+        } catch {
+            return makeErrorResult(toolCall: toolCall, context: AIErrorContext(error))
         }
     }
 
-    private static func makeCancelledResult(_ toolCall: AIToolUse) -> AIToolResult {
-        AIToolResult(toolUseId: toolCall.id, content: "Cancelled", isError: true)
+    private static func executeWithRepair(
+        toolCall: AIToolUse,
+        tool: AITool,
+        errorContext: AIErrorContext,
+        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?
+    ) async throws -> AIToolResult {
+        guard let toolCallRepairHandler else {
+            return makeErrorResult(toolCall: toolCall, context: errorContext)
+        }
+
+        let repairedData = await toolCallRepairHandler(toolCall, errorContext)
+        try Task.checkCancellation()
+
+        guard let repairedData else {
+            return makeErrorResult(toolCall: toolCall, context: errorContext)
+        }
+
+        do {
+            let output = try await tool.handler(repairedData)
+            try Task.checkCancellation()
+            return AIToolResult(toolUseId: toolCall.id, content: output)
+        } catch is CancellationError {
+            throw AIError.cancelled
+        } catch let error as AIToolInputDecodingError {
+            return makeErrorResult(toolCall: toolCall, context: error.context)
+        } catch let error as AIError {
+            if error == .cancelled {
+                throw error
+            }
+
+            return makeErrorResult(toolCall: toolCall, context: error.context)
+        } catch {
+            return makeErrorResult(toolCall: toolCall, context: AIErrorContext(error))
+        }
+    }
+
+    private static func makeErrorResult(toolCall: AIToolUse, context: AIErrorContext) -> AIToolResult {
+        AIToolResult(
+            toolUseId: toolCall.id,
+            content: context.message,
+            isError: true
+        )
     }
 
     /// Extract tool call blocks from the response content.

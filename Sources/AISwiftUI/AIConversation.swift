@@ -193,7 +193,11 @@
                             }
                         case .streamEvent(.usage(let usage)):
                             exchangeUsage = usage
-                        case .streamEvent(.finish):
+                        case .streamEvent(.finish(let reason)):
+                            guard reason != .toolUse else {
+                                break
+                            }
+
                             let finalUsage = exchangeUsage
                             exchangeUsage = nil
                             await MainActor.run {
@@ -209,6 +213,8 @@
                                         self.totalUsage, finalUsage
                                     )
                                 }
+                                self.activeToolCalls = []
+                                self.toolResults = []
                             }
                         case .toolApprovalRequired(let toolUse),
                             .toolExecuting(let toolUse):

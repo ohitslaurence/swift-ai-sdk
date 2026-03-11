@@ -1,4 +1,4 @@
-import AICore
+@testable import AICore
 
 /// Records provider calls for tests.
 public actor MockProviderRecorder {
@@ -62,14 +62,17 @@ public struct MockProvider: AIProvider, Sendable {
 
     public func stream(_ request: AIRequest) -> AIStream {
         let stream = streamHandler(request)
+        let warningStore = AIStreamWarningStore()
 
         return AIStream(
-            AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
+            wrapping: AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
                 continuation in
                 let task = Task {
                     await recorder.recordStream(request)
 
                     do {
+                        await warningStore.set(await stream.responseWarnings())
+
                         for try await event in stream {
                             continuation.yield(event)
                         }
@@ -94,7 +97,9 @@ public struct MockProvider: AIProvider, Sendable {
                 continuation.onTermination = { _ in
                     task.cancel()
                 }
-            }
+            },
+            applyLifecyclePolicy: true,
+            warningProvider: { await warningStore.get() }
         )
     }
 

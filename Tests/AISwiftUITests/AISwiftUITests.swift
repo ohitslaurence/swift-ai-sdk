@@ -469,6 +469,54 @@
             XCTAssertTrue(hasToolRole, "Should have tool result messages from step")
         }
 
+        @MainActor
+        func test_conversation_toolStepWithTextDoesNotDuplicateAssistantMessage() async throws {
+            let conv = AIConversation(
+                provider: MockProvider(streamHandler: { request in
+                    let hasToolResults = request.messages.contains { $0.role == AIRole.tool }
+                    if hasToolResults {
+                        return .finished(text: "Final answer")
+                    }
+
+                    return AIStream(
+                        AsyncThrowingStream<AIStreamEvent, any Error> { continuation in
+                            continuation.yield(.start(id: "1", model: "m"))
+                            continuation.yield(.delta(.text("thinking")))
+                            continuation.yield(.toolUseStart(id: "t1", name: "calc"))
+                            continuation.yield(.delta(.toolInput(id: "t1", jsonDelta: "{}")))
+                            continuation.yield(.finish(.toolUse))
+                            continuation.finish()
+                        }
+                    )
+                }),
+                model: AIModel("test"),
+                smoothStreaming: nil
+            )
+
+            let tool = AITool(
+                name: "calc",
+                description: "Calculate",
+                inputSchema: .object(properties: [:], required: []),
+                handler: { _ in "42" }
+            )
+
+            conv.send("Calculate", tools: [tool])
+            try await Task.sleep(nanoseconds: 500_000_000)
+
+            let assistantMessages = conv.messages.filter { $0.role == AIRole.assistant }
+            XCTAssertEqual(assistantMessages.count, 2)
+            XCTAssertEqual(assistantMessages.last?.content.first, .text("Final answer"))
+
+            let firstAssistant = try XCTUnwrap(assistantMessages.first)
+            XCTAssertTrue(firstAssistant.content.contains(.text("thinking")))
+            XCTAssertTrue(firstAssistant.content.contains { content in
+                if case .toolUse = content {
+                    return true
+                }
+                return false
+            })
+        }
+
         // Test 18: approval and repair handlers are forwarded
         @MainActor
         func test_conversation_handlersForwarded() async throws {

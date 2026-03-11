@@ -80,7 +80,7 @@ let result = try await provider.completeWithTools(
 
 print(result.response.text)
 print("Steps: \(result.steps.count)")
-print("Total tokens: \(result.usage.totalTokens)")
+print("Total tokens: \(result.totalUsage.totalTokens)")
 ```
 
 ### Stop conditions
@@ -138,6 +138,10 @@ let result = try await provider.completeWithTools(
     }
 )
 ```
+
+`toolCallRepairHandler` is used for typed tool input decode failures. It lets you
+repair malformed JSON locally and retry the decode once without forcing an extra
+model round-trip.
 
 ## Agents
 

@@ -6,6 +6,10 @@
 
 Implement the tool execution loop: model calls a tool -> SDK executes it -> sends result back -> model continues. Support both single-step tool use and multi-step agentic loops with configurable limits, approval hooks, cancellation, and streaming.
 
+## Review History
+
+- 2026-03-11: Deep implementation audit completed against `AICore`, provider transcript mapping, `Agent`, `AISwiftUI` integration assumptions, docs, and regression coverage. The audit corrected cancellation commit behavior, restricted tool-call repair to typed decode failures, preserved streamed warning/error fidelity, tightened stitched-stream buffering semantics, and expanded regression coverage.
+
 ## Dependencies
 
 - Spec 01 (AICore)
@@ -23,7 +27,7 @@ extension AITool {
         description: String,
         needsApproval: Bool = false,
         handler: @escaping @Sendable (Input) async throws -> Output
-    ) -> AITool
+    ) throws -> AITool
 }
 ```
 
@@ -76,9 +80,9 @@ public struct AIToolStep: Sendable {
 
 public struct AIToolStream: AsyncSequence, Sendable {
     public typealias Element = AIToolStreamEvent
-    public typealias AsyncIterator = AsyncThrowingStream<AIToolStreamEvent, AIError>.Iterator
+    public typealias AsyncIterator = AsyncThrowingStream<AIToolStreamEvent, any Error>.Iterator
 
-    public init(_ stream: AsyncThrowingStream<AIToolStreamEvent, AIError>)
+    public init(_ stream: AsyncThrowingStream<AIToolStreamEvent, any Error>)
     public func makeAsyncIterator() -> AsyncIterator
 }
 
@@ -140,7 +144,7 @@ struct WeatherInput: AIStructured {
     let city: String
 }
 
-let weatherTool = AITool.define(
+let weatherTool = try AITool.define(
     name: "get_weather",
     description: "Get current weather for a city"
 ) { (input: WeatherInput) async throws -> String in
@@ -233,7 +237,7 @@ Rules:
 
 ### Tool Call Repair
 
-When a tool call's JSON input cannot be decoded for typed execution:
+When a typed tool call's JSON input cannot be decoded:
 
 1. Create an `AIErrorContext` describing the parse failure.
 2. Invoke `toolCallRepairHandler` if present.
@@ -271,7 +275,7 @@ Tool failures are part of the transcript, not fatal loop errors.
 
 ### Streaming Tool Execution (Stitchable Stream)
 
-Multi-step streaming uses an outer actor-backed `AsyncThrowingStream`:
+Multi-step streaming uses a stitched outer `AsyncThrowingStream` with bounded buffering:
 
 1. Start the first provider stream and forward raw `AIStreamEvent`s as `.streamEvent`.
 2. When the stream finishes with `.toolUse`, execute approval + tools.
@@ -281,11 +285,11 @@ Multi-step streaming uses an outer actor-backed `AsyncThrowingStream`:
 
 Backpressure rule:
 
-- The outer stream only yields when the consumer awaits the next event. Buffering must remain bounded; do not accumulate unbounded text or tool events in memory.
+- The outer stream must keep buffering bounded without silently dropping stitched events. If the buffer is full, the producer side must back off rather than lose transcript or tool lifecycle events.
 
 ### Stream Interruption Recovery
 
-- If the active provider stream fails after emitting any `AIStreamEvent`, surface `AIError.streamInterrupted` unless a more specific `AIError` is available.
+- If the active provider stream fails after emitting any `AIStreamEvent`, surface `AIError.streamInterrupted` unless a more specific `AIError` is available and should be preserved.
 - Do not automatically restart the interrupted tool-loop step, even if previous completed steps had no side effects.
 - Only completed `AIToolStep`s remain committed. Partial assistant text from the interrupted in-flight step stays transient and is not appended to the transcript.
 
@@ -330,6 +334,13 @@ Sources/AICore/
 23. `AIToolStep.appendedMessages` matches the documented transcript replay order.
 24. Interrupted stitched streams surface `AIError.streamInterrupted` and preserve only previously completed steps.
 25. Cancellation while waiting for approval stops without synthesizing a denial tool result.
+26. Specific streamed `AIError` values are preserved after partial output when available.
+27. Cancellation during tool execution does not commit a partial completed step.
+28. Cancellation during approval does not commit a partial completed step.
+29. Tool call repair is attempted only for typed decode failures, not arbitrary tool handler errors.
+30. Streamed provider warnings are preserved on `AIToolStep.response`.
+31. `AIToolResponse.totalUsage` preserves token detail accounting across all completed responses.
+32. Slow consumers do not silently drop stitched stream events.
 
 ## Acceptance Criteria
 
@@ -344,4 +355,4 @@ Sources/AICore/
 - [ ] `Agent` is a reusable wrapper over the same lower-level loop semantics.
 - [ ] Streaming tool execution uses a single stitched outer stream with bounded buffering.
 - [ ] `AITool.define` supports typed input plus structured encodable output.
-- [ ] All 25 test cases pass.
+- [ ] All 32 test cases pass.

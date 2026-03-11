@@ -1,5 +1,13 @@
 import Foundation
 
+package struct AIToolInputDecodingError: Error, Sendable {
+    package let context: AIErrorContext
+
+    package init(_ error: any Error) {
+        self.context = AIErrorContext(error)
+    }
+}
+
 /// A tool definition the model may call.
 public struct AITool: Sendable {
     public let name: String
@@ -40,8 +48,16 @@ public struct AITool: Sendable {
             inputSchema: schema,
             needsApproval: needsApproval
         ) { data in
-            let decoder = JSONDecoder()
-            let input = try decoder.decode(Input.self, from: data)
+            let input: Input
+
+            do {
+                input = try JSONDecoder().decode(Input.self, from: data)
+            } catch is CancellationError {
+                throw AIError.cancelled
+            } catch {
+                throw AIToolInputDecodingError(error)
+            }
+
             let output = try await handler(input)
 
             if let stringOutput = output as? String {
@@ -51,7 +67,7 @@ public struct AITool: Sendable {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             let outputData = try encoder.encode(output)
-            return String(data: outputData, encoding: .utf8) ?? ""
+            return String(decoding: outputData, as: UTF8.self)
         }
     }
 }

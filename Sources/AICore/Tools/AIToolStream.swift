@@ -41,7 +41,7 @@ extension AIToolStream {
     ) -> AIToolStream {
         let stream = AsyncThrowingStream<AIToolStreamEvent, any Error>(
             AIToolStreamEvent.self,
-            bufferingPolicy: .bufferingNewest(64)
+            bufferingPolicy: .bufferingOldest(64)
         ) { continuation in
             let task = Task {
                 await streamLoop(
@@ -100,7 +100,7 @@ extension AIToolStream {
 
                 for try await event in providerStream {
                     sawEvent = true
-                    continuation.yield(.streamEvent(event))
+                    try await yieldEvent(.streamEvent(event), to: continuation)
 
                     switch event {
                     case .start(let id, let startedModel):
@@ -134,19 +134,22 @@ extension AIToolStream {
                     return
                 }
 
+                let warnings = await providerStream.responseWarnings()
+
                 response = AIResponse(
                     id: identifier,
                     content: content.map(\.contentValue),
                     model: model,
                     usage: usage,
-                    finishReason: finishReason
+                    finishReason: finishReason,
+                    warnings: warnings
                 )
             } catch is CancellationError {
                 continuation.finish(throwing: AIError.cancelled)
                 return
             } catch let error as AIError {
                 if sawEvent {
-                    continuation.finish(throwing: AIError.streamInterrupted)
+                    continuation.finish(throwing: interruptedStreamError(for: error))
                 } else {
                     continuation.finish(throwing: error)
                 }
@@ -171,13 +174,34 @@ extension AIToolStream {
                 return
             }
 
-            let toolResults = await executeToolsStreaming(
-                toolCalls: toolCalls,
-                tools: currentRequest.tools,
-                approvalHandler: approvalHandler,
-                toolCallRepairHandler: toolCallRepairHandler,
-                continuation: continuation
-            )
+            let toolResults: [AIToolResult]
+
+            do {
+                toolResults = try await AIToolExecution.executeTools(
+                    toolCalls: toolCalls,
+                    tools: currentRequest.tools,
+                    approvalHandler: approvalHandler,
+                    toolCallRepairHandler: toolCallRepairHandler,
+                    onToolApprovalRequired: { toolUse in
+                        try await yieldEvent(.toolApprovalRequired(toolUse), to: continuation)
+                    },
+                    onToolExecuting: { toolUse in
+                        try await yieldEvent(.toolExecuting(toolUse), to: continuation)
+                    },
+                    onToolResult: { result in
+                        try await yieldEvent(.toolResult(result), to: continuation)
+                    }
+                )
+            } catch is CancellationError {
+                continuation.finish(throwing: AIError.cancelled)
+                return
+            } catch let error as AIError {
+                continuation.finish(throwing: error)
+                return
+            } catch {
+                continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
+                return
+            }
 
             let appendedMessages = AIToolExecution.buildTranscriptMessages(
                 response: response,
@@ -193,7 +217,18 @@ extension AIToolStream {
             )
             steps.append(step)
 
-            continuation.yield(.stepComplete(step))
+            do {
+                try await yieldEvent(.stepComplete(step), to: continuation)
+            } catch is CancellationError {
+                continuation.finish(throwing: AIError.cancelled)
+                return
+            } catch let error as AIError {
+                continuation.finish(throwing: error)
+                return
+            } catch {
+                continuation.finish(throwing: AIError.unknown(AIErrorContext(error)))
+                return
+            }
             await onStepComplete?(step)
 
             if let matched = await AIToolExecution.evaluateStopConditions(stopConditions, steps: steps) {
@@ -206,132 +241,32 @@ extension AIToolStream {
         }
     }
 
-    /// Execute tools in streaming mode, emitting events for each tool.
-    private static func executeToolsStreaming(
-        toolCalls: [AIToolUse],
-        tools: [AITool],
-        approvalHandler: (@Sendable (AIToolUse) async -> Bool)?,
-        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?,
-        continuation: AsyncThrowingStream<AIToolStreamEvent, any Error>.Continuation
-    ) async -> [AIToolResult] {
-        let toolMap = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    private static func yieldEvent(
+        _ event: AIToolStreamEvent,
+        to continuation: AsyncThrowingStream<AIToolStreamEvent, any Error>.Continuation
+    ) async throws {
+        while true {
+            try Task.checkCancellation()
 
-        let unorderedResults = await withTaskGroup(
-            of: (Int, AIToolResult).self,
-            returning: [AIToolResult].self
-        ) { group in
-            for (index, toolCall) in toolCalls.enumerated() {
-                group.addTask {
-                    let tool = toolMap[toolCall.name]
-
-                    if let tool, tool.needsApproval {
-                        continuation.yield(.toolApprovalRequired(toolCall))
-                    }
-
-                    let result = await executeSingleToolStreaming(
-                        toolCall: toolCall,
-                        tool: tool,
-                        approvalHandler: approvalHandler,
-                        toolCallRepairHandler: toolCallRepairHandler,
-                        continuation: continuation
-                    )
-                    continuation.yield(.toolResult(result))
-                    return (index, result)
-                }
+            switch continuation.yield(event) {
+            case .enqueued:
+                return
+            case .dropped:
+                await Task.yield()
+            case .terminated:
+                throw AIError.cancelled
+            @unknown default:
+                await Task.yield()
             }
-
-            var results = [(Int, AIToolResult)]()
-            for await pair in group {
-                results.append(pair)
-            }
-            return results.sorted { $0.0 < $1.0 }.map(\.1)
         }
-
-        return unorderedResults
     }
 
-    private static func executeSingleToolStreaming(
-        toolCall: AIToolUse,
-        tool: AITool?,
-        approvalHandler: (@Sendable (AIToolUse) async -> Bool)?,
-        toolCallRepairHandler: (@Sendable (AIToolUse, AIErrorContext) async -> Data?)?,
-        continuation: AsyncThrowingStream<AIToolStreamEvent, any Error>.Continuation
-    ) async -> AIToolResult {
-        guard let tool else {
-            return AIToolResult(
-                toolUseId: toolCall.id,
-                content: "Unknown tool: \(toolCall.name)",
-                isError: true
-            )
-        }
-
-        if tool.needsApproval {
-            guard let approvalHandler else {
-                return AIToolResult(
-                    toolUseId: toolCall.id,
-                    content: "Tool execution denied by user",
-                    isError: true
-                )
-            }
-
-            if Task.isCancelled {
-                return AIToolResult(toolUseId: toolCall.id, content: "Cancelled", isError: true)
-            }
-
-            let approved = await approvalHandler(toolCall)
-
-            if Task.isCancelled {
-                return AIToolResult(toolUseId: toolCall.id, content: "Cancelled", isError: true)
-            }
-
-            guard approved else {
-                return AIToolResult(
-                    toolUseId: toolCall.id,
-                    content: "Tool execution denied by user",
-                    isError: true
-                )
-            }
-        }
-
-        continuation.yield(.toolExecuting(toolCall))
-
-        do {
-            let output = try await tool.handler(toolCall.input)
-            return AIToolResult(toolUseId: toolCall.id, content: output)
-        } catch {
-            if let toolCallRepairHandler {
-                let errorContext = AIErrorContext(
-                    message: String(describing: error),
-                    underlyingType: String(reflecting: type(of: error))
-                )
-
-                if let repairedData = await toolCallRepairHandler(toolCall, errorContext) {
-                    do {
-                        let output = try await tool.handler(repairedData)
-                        return AIToolResult(toolUseId: toolCall.id, content: output)
-                    } catch {
-                        let repairErrorContext = AIErrorContext(
-                            message: String(describing: error),
-                            underlyingType: String(reflecting: type(of: error))
-                        )
-                        return AIToolResult(
-                            toolUseId: toolCall.id,
-                            content: repairErrorContext.message,
-                            isError: true
-                        )
-                    }
-                }
-            }
-
-            let errorContext = AIErrorContext(
-                message: String(describing: error),
-                underlyingType: String(reflecting: type(of: error))
-            )
-            return AIToolResult(
-                toolUseId: toolCall.id,
-                content: errorContext.message,
-                isError: true
-            )
+    private static func interruptedStreamError(for error: AIError) -> AIError {
+        switch error {
+        case .noContentGenerated, .streamInterrupted, .unknown:
+            return .streamInterrupted
+        default:
+            return error
         }
     }
 }

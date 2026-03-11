@@ -1,4 +1,4 @@
-import AICore
+@testable import AICore
 import AITestSupport
 import Foundation
 import Testing
@@ -93,6 +93,7 @@ struct ToolUseTests {
     @Test("Multiple tool calls in one step execute concurrently")
     func multipleToolCallsConcurrent() async throws {
         let callCount = Counter()
+        let sleepDuration: UInt64 = 200_000_000
 
         let provider = MockProvider(
             completionHandler: { request in
@@ -109,19 +110,33 @@ struct ToolUseTests {
             }
         )
 
+        let concurrentTool = AITool(
+            name: "echo",
+            description: "Echoes input",
+            inputSchema: .object(properties: ["text": .string()], required: ["text"])
+        ) { data in
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            try await Task.sleep(nanoseconds: sleepDuration)
+            return json?["text"] as? String ?? "no-text"
+        }
+
         let request = AIRequest(
             model: AIModel("mock"),
             messages: [.user("test")],
-            tools: [makeEchoTool()]
+            tools: [concurrentTool]
         )
 
+        let clock = ContinuousClock()
+        let start = clock.now
         let result = try await provider.completeWithTools(request)
+        let elapsed = clock.now - start
 
         #expect(result.steps.count == 1)
         #expect(result.steps[0].toolResults.count == 2)
 
         let resultContents = Set(result.steps[0].toolResults.map(\.content))
         #expect(resultContents == Set(["a", "b"]))
+        #expect(elapsed < .milliseconds(350))
     }
 
     // MARK: - 3. Multi-step loop calls tools across multiple turns
@@ -333,6 +348,48 @@ struct ToolUseTests {
         #expect(result.stopReason == .modelStopped)
     }
 
+    @Test("Tool handler failures do not trigger tool call repair")
+    func toolHandlerFailuresDoNotTriggerRepair() async throws {
+        let callCount = Counter()
+        let repairCallCount = Counter()
+
+        let failingTool = try AITool.define(
+            name: "fail",
+            description: "Always fails"
+        ) { (_: SimpleInput) async throws -> String in
+            throw TestToolError.intentional
+        }
+
+        let provider = MockProvider(
+            completionHandler: { _ in
+                let count = await callCount.incrementAndGet()
+                if count == 1 {
+                    return self.makeToolUseResponse(
+                        toolCalls: [("tc-1", "fail", self.makeInput(["value": "x"]))]
+                    )
+                }
+                return self.makeFinalResponse()
+            }
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [failingTool]
+        )
+
+        let result = try await provider.completeWithTools(
+            request,
+            toolCallRepairHandler: { _, _ in
+                await repairCallCount.incrementAndGet()
+                return self.makeInput(["value": "repaired"])
+            }
+        )
+
+        #expect(result.steps[0].toolResults[0].isError == true)
+        #expect(await repairCallCount.value == 0)
+    }
+
     // MARK: - 9. Approval-gated tools execute when approved
 
     @Test("Approval-gated tools execute when approved")
@@ -459,15 +516,11 @@ struct ToolUseTests {
     func toolCallRepairSuccess() async throws {
         let callCount = Counter()
 
-        let typedTool = AITool(
+        let typedTool = try AITool.define(
             name: "typed",
-            description: "Needs valid JSON",
-            inputSchema: .object(properties: ["value": .integer()], required: ["value"])
-        ) { data in
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            guard let value = json?["value"] as? Int else {
-                throw TestToolError.invalidInput
-            }
+            description: "Needs valid JSON"
+        ) { (input: IntInput) async throws -> String in
+            let value = input.value
             return "got \(value)"
         }
 
@@ -498,6 +551,7 @@ struct ToolUseTests {
 
         #expect(result.steps[0].toolResults[0].content == "got 42")
         #expect(result.steps[0].toolResults[0].isError == false)
+        #expect(await callCount.value == 2)
     }
 
     // MARK: - 13. Tool call repair falls back to error result when repair fails
@@ -506,15 +560,10 @@ struct ToolUseTests {
     func toolCallRepairFallback() async throws {
         let callCount = Counter()
 
-        let typedTool = AITool(
+        let typedTool = try AITool.define(
             name: "typed",
-            description: "Needs valid JSON",
-            inputSchema: .object(properties: ["value": .integer()], required: ["value"])
-        ) { data in
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            guard json?["value"] is Int else {
-                throw TestToolError.invalidInput
-            }
+            description: "Needs valid JSON"
+        ) { (_: IntInput) async throws -> String in
             return "success"
         }
 
@@ -782,6 +831,156 @@ struct ToolUseTests {
         #expect(sawApprovalRequired)
     }
 
+    @Test("streamWithTools preserves step warnings")
+    func streamPreservesStepWarnings() async throws {
+        let warning = AIProviderWarning(
+            code: "tool-warning",
+            message: "warning message",
+            parameter: "tools"
+        )
+
+        let streamSequencer = StreamSequencer(streams: [
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s1", model: "mock"))
+                    continuation.yield(.toolUseStart(id: "tc-1", name: "echo"))
+                    continuation.yield(.delta(.toolInput(id: "tc-1", jsonDelta: "{\"text\":\"hi\"}")))
+                    continuation.yield(.finish(.toolUse))
+                    continuation.finish()
+                },
+                warnings: [warning]
+            ),
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s2", model: "mock"))
+                    continuation.yield(.finish(.stop))
+                    continuation.finish()
+                }
+            ),
+        ])
+
+        let provider = MockProvider(
+            streamHandler: { _ in
+                streamSequencer.next()
+            }
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [makeEchoTool()]
+        )
+
+        var completedStep: AIToolStep?
+
+        for try await event in provider.streamWithTools(request) {
+            if case .stepComplete(let step) = event {
+                completedStep = step
+            }
+        }
+
+        #expect(completedStep?.response.warnings == [warning])
+    }
+
+    @Test("streamWithTools preserves specific AIError after partial output")
+    func interruptedStreamPreservesSpecificError() async throws {
+        let expectedError = AIError.serverError(statusCode: 503, message: "temporary failure")
+        let streamSequencer = StreamSequencer(streams: [
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s1", model: "mock"))
+                    continuation.yield(.toolUseStart(id: "tc-1", name: "echo"))
+                    continuation.yield(.delta(.toolInput(id: "tc-1", jsonDelta: "{\"text\":\"a\"}")))
+                    continuation.yield(.finish(.toolUse))
+                    continuation.finish()
+                }
+            ),
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s2", model: "mock"))
+                    continuation.yield(.delta(.text("partial")))
+                    continuation.finish(throwing: expectedError)
+                }
+            ),
+        ])
+
+        let provider = MockProvider(
+            streamHandler: { _ in
+                streamSequencer.next()
+            }
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [makeEchoTool()]
+        )
+
+        var completedSteps = 0
+        var caughtError: (any Error)?
+
+        do {
+            for try await event in provider.streamWithTools(request) {
+                if case .stepComplete = event {
+                    completedSteps += 1
+                }
+            }
+        } catch {
+            caughtError = error
+        }
+
+        #expect(completedSteps == 1)
+        #expect(caughtError as? AIError == expectedError)
+    }
+
+    @Test("streamWithTools does not drop events for slow consumers")
+    func streamDoesNotDropEventsForSlowConsumers() async throws {
+        let eventCount = 96
+        let streamSequencer = StreamSequencer(streams: [
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s1", model: "mock"))
+                    for index in 0..<eventCount {
+                        continuation.yield(.delta(.text("chunk-\(index)")))
+                    }
+                    continuation.yield(.toolUseStart(id: "tc-1", name: "echo"))
+                    continuation.yield(.delta(.toolInput(id: "tc-1", jsonDelta: "{\"text\":\"hi\"}")))
+                    continuation.yield(.finish(.toolUse))
+                    continuation.finish()
+                }
+            ),
+            AIStream(
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.start(id: "s2", model: "mock"))
+                    continuation.yield(.finish(.stop))
+                    continuation.finish()
+                }
+            ),
+        ])
+
+        let provider = MockProvider(
+            streamHandler: { _ in
+                streamSequencer.next()
+            }
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [makeEchoTool()]
+        )
+
+        var streamEventCount = 0
+        for try await event in provider.streamWithTools(request) {
+            if case .streamEvent = event {
+                streamEventCount += 1
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        }
+
+        #expect(streamEventCount == eventCount + 6)
+    }
+
     // MARK: - 20. Cancellation stops active provider request and in-flight tools
 
     @Test("Cancellation stops active request")
@@ -827,6 +1026,118 @@ struct ToolUseTests {
         } catch {
             // Other errors acceptable — cancellation may surface as AIError.cancelled etc.
         }
+    }
+
+    @Test("Cancellation during approval does not commit a completed step")
+    func cancellationDuringApprovalDoesNotCommitStep() async throws {
+        let approvalCalled = ConditionFlag()
+        let stepCounter = Counter()
+        let recorder = MockProviderRecorder()
+
+        let approvalTool = AITool(
+            name: "sensitive",
+            description: "Needs approval",
+            inputSchema: .object(properties: [:], required: []),
+            needsApproval: true
+        ) { _ in "should not execute" }
+
+        let provider = MockProvider(
+            completionHandler: { _ in
+                self.makeToolUseResponse(
+                    toolCalls: [("tc-1", "sensitive", Data("{}".utf8))]
+                )
+            },
+            recorder: recorder
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [approvalTool]
+        )
+
+        let task = Task {
+            try await provider.completeWithTools(
+                request,
+                approvalHandler: { _ in
+                    await approvalCalled.set()
+                    while !Task.isCancelled {
+                        await Task.yield()
+                    }
+                    return true
+                },
+                onStepComplete: { _ in
+                    await stepCounter.incrementAndGet()
+                }
+            )
+        }
+
+        await approvalCalled.wait()
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation error, but task completed normally")
+        } catch {
+            #expect((error as? AIError) == .cancelled || error is CancellationError)
+        }
+
+        #expect(await stepCounter.value == 0)
+        #expect(await recorder.completeCalls.count == 1)
+    }
+
+    @Test("Cancellation during tool execution does not commit a completed step")
+    func cancellationDuringToolExecutionDoesNotCommitStep() async throws {
+        let toolStarted = ConditionFlag()
+        let stepCounter = Counter()
+        let recorder = MockProviderRecorder()
+
+        let slowTool = AITool(
+            name: "slow",
+            description: "Takes a long time",
+            inputSchema: .object(properties: [:], required: [])
+        ) { _ in
+            await toolStarted.set()
+            try await Task.sleep(nanoseconds: 10_000_000_000)
+            return "should not reach"
+        }
+
+        let provider = MockProvider(
+            completionHandler: { _ in
+                self.makeToolUseResponse(
+                    toolCalls: [("tc-1", "slow", Data("{}".utf8))]
+                )
+            },
+            recorder: recorder
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [slowTool]
+        )
+
+        let task = Task {
+            try await provider.completeWithTools(
+                request,
+                onStepComplete: { _ in
+                    await stepCounter.incrementAndGet()
+                }
+            )
+        }
+
+        await toolStarted.wait()
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation error, but task completed normally")
+        } catch {
+            #expect((error as? AIError) == .cancelled || error is CancellationError)
+        }
+
+        #expect(await stepCounter.value == 0)
+        #expect(await recorder.completeCalls.count == 1)
     }
 
     // MARK: - 21. No automatic retry after tool side effect
@@ -898,6 +1209,59 @@ struct ToolUseTests {
         #expect(result.steps.count == 2)
         let stepCount = await stepCounter.value
         #expect(stepCount == 2)
+    }
+
+    @Test("AIToolResponse totalUsage preserves token detail accounting")
+    func totalUsagePreservesTokenDetails() async throws {
+        let callCount = Counter()
+
+        let provider = MockProvider(
+            completionHandler: { _ in
+                let count = await callCount.incrementAndGet()
+                switch count {
+                case 1:
+                    return AIResponse(
+                        id: "resp-1",
+                        content: [.toolUse(AIToolUse(id: "tc-1", name: "echo", input: self.makeInput(["text": "a"])))],
+                        model: "mock-model",
+                        usage: AIUsage(
+                            inputTokens: 10,
+                            outputTokens: 5,
+                            inputTokenDetails: .init(cachedTokens: 2, cacheWriteTokens: 1),
+                            outputTokenDetails: .init(reasoningTokens: 3)
+                        ),
+                        finishReason: .toolUse
+                    )
+                default:
+                    return AIResponse(
+                        id: "resp-2",
+                        content: [.text("done")],
+                        model: "mock-model",
+                        usage: AIUsage(
+                            inputTokens: 7,
+                            outputTokens: 4,
+                            inputTokenDetails: .init(cachedTokens: 1, cacheWriteTokens: 2),
+                            outputTokenDetails: .init(reasoningTokens: 5)
+                        ),
+                        finishReason: .stop
+                    )
+                }
+            }
+        )
+
+        let request = AIRequest(
+            model: AIModel("mock"),
+            messages: [.user("test")],
+            tools: [makeEchoTool()]
+        )
+
+        let result = try await provider.completeWithTools(request)
+
+        #expect(result.totalUsage.inputTokens == 17)
+        #expect(result.totalUsage.outputTokens == 9)
+        #expect(result.totalUsage.inputTokenDetails?.cachedTokens == 3)
+        #expect(result.totalUsage.inputTokenDetails?.cacheWriteTokens == 3)
+        #expect(result.totalUsage.outputTokenDetails?.reasoningTokens == 8)
     }
 
     // MARK: - 23. AIToolStep.appendedMessages matches transcript replay order
@@ -1078,6 +1442,10 @@ private struct WeatherInput: AIStructured {
 
 private struct SimpleInput: AIStructured {
     let value: String
+}
+
+private struct IntInput: AIStructured {
+    let value: Int
 }
 
 private struct ComputeOutput: Encodable, Sendable {
