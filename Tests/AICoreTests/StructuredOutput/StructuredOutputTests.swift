@@ -582,6 +582,7 @@ struct CancellationTests {
         let provider = MockProvider(
             completionHandler: { _ in
                 await taskStarted.signal()
+                try await Task.sleep(nanoseconds: 500_000_000)
                 try Task.checkCancellation()
                 return AIResponse(
                     id: "test",
