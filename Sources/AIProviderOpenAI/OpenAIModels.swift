@@ -15,6 +15,13 @@ extension AIModel {
         case o4Mini
         case custom(String)
 
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt4_1: Self { .gpt41 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt4_1Mini: Self { .gpt41Mini }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var gpt4_1Nano: Self { .gpt41Nano }
+
         public var model: AIModel {
             switch self {
             case .gpt4o:

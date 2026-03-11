@@ -26,11 +26,26 @@ private actor RequestCapture {
     var headers: [String: String]? { _headers }
 }
 
+private actor RequestHistoryCapture {
+    private var _requests: [URLRequest] = []
+
+    func appendAndCount(_ request: URLRequest) -> Int {
+        _requests.append(request)
+        return _requests.count
+    }
+
+    var requests: [URLRequest] { _requests }
+}
+
 private func bodyJSON(_ capture: RequestCapture) async throws -> [String: Any] {
     guard let body = await capture.body else {
         throw NSError(domain: "test", code: 0, userInfo: [NSLocalizedDescriptionKey: "No request body"])
     }
     return try JSONSerialization.jsonObject(with: body) as! [String: Any]
+}
+
+private func bodyJSON(_ data: Data) throws -> [String: Any] {
+    try JSONSerialization.jsonObject(with: data) as! [String: Any]
 }
 
 private func httpResponse(
@@ -1141,5 +1156,356 @@ final class OpenAIEmbeddingBaseURLTests: XCTestCase {
 
         let url = await capture.url
         XCTAssertEqual(url?.absoluteString, "https://custom.api.com/v1/embeddings")
+    }
+}
+
+final class OpenAIRequestForwardingTests: XCTestCase {
+    func test_defaultHeadersMergeWithRequestHeadersUsingRequestPrecedence() async throws {
+        let capture = RequestCapture()
+
+        let provider = OpenAIProvider(
+            apiKey: "sk-test",
+            transport: MockTransport(
+                dataHandler: { request in
+                    await capture.set(request)
+                    return (completionJSON(), httpResponse())
+                },
+                streamHandler: { _ in
+                    fatalError("streamHandler not configured")
+                }
+            ),
+            defaultHeaders: ["X-Provider": "provider", "X-Shared": "provider"]
+        )
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Hi")],
+            headers: ["X-Request": "request", "X-Shared": "request"]
+        )
+        _ = try await provider.complete(request)
+
+        let headers = await capture.headers
+        XCTAssertEqual(headers?["X-Provider"], "provider")
+        XCTAssertEqual(headers?["X-Request"], "request")
+        XCTAssertEqual(headers?["X-Shared"], "request")
+    }
+
+    func test_metadataIsForwarded() async throws {
+        let capture = RequestCapture()
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (completionJSON(), httpResponse())
+        }
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Hi")],
+            metadata: ["feature": "spec-review", "team": "sdk"]
+        )
+        _ = try await provider.complete(request)
+
+        let json = try await bodyJSON(capture)
+        let metadata = json["metadata"] as? [String: String]
+        XCTAssertEqual(metadata?["feature"], "spec-review")
+        XCTAssertEqual(metadata?["team"], "sdk")
+    }
+}
+
+final class OpenAIReasoningWarningTests: XCTestCase {
+    func test_reasoningModelsWarnForTemperatureAndTopP() async throws {
+        let provider = makeProvider { _ in
+            (completionJSON(model: "gpt-5"), httpResponse())
+        }
+
+        let request = AIRequest(
+            model: .gpt(.gpt5),
+            messages: [.user("Hi")],
+            temperature: 0.3,
+            topP: 0.7
+        )
+        let response = try await provider.complete(request)
+
+        XCTAssertTrue(response.warnings.contains(where: { $0.code == "unsupported_temperature" }))
+        XCTAssertTrue(response.warnings.contains(where: { $0.code == "unsupported_top_p" }))
+    }
+}
+
+final class OpenAICompatibilityFallbackTests: XCTestCase {
+    func test_compatibleBackendFallsBackToLegacyMaxTokensForCompletion() async throws {
+        let history = RequestHistoryCapture()
+
+        let provider = makeProvider(baseURL: URL(string: "https://compatible.example.com")!) { request in
+            let attempt = await history.appendAndCount(request)
+
+            if attempt == 1 {
+                let error = Data("{\"error\":{\"message\":\"Unsupported field: max_completion_tokens\"}}".utf8)
+                return (error, httpResponse(statusCode: 400))
+            }
+
+            return (completionJSON(), httpResponse())
+        }
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Hi")],
+            maxTokens: 128,
+            retryPolicy: .none
+        )
+        let response = try await provider.complete(request)
+
+        let requests = await history.requests
+        XCTAssertEqual(requests.count, 2)
+
+        let firstRequest = try XCTUnwrap(requests[0].httpBody)
+        let secondRequest = try XCTUnwrap(requests[1].httpBody)
+        let firstJSON = try bodyJSON(firstRequest)
+        let secondJSON = try bodyJSON(secondRequest)
+
+        XCTAssertEqual(firstJSON["max_completion_tokens"] as? Int, 128)
+        XCTAssertNil(firstJSON["max_tokens"])
+        XCTAssertNil(secondJSON["max_completion_tokens"])
+        XCTAssertEqual(secondJSON["max_tokens"] as? Int, 128)
+        XCTAssertTrue(response.warnings.contains(where: { $0.code == "legacy_max_tokens_fallback" }))
+    }
+
+    func test_compatibleBackendFallsBackToLegacyMaxTokensForStreaming() async throws {
+        let history = RequestHistoryCapture()
+
+        let provider = makeProvider(
+            baseURL: URL(string: "https://compatible.example.com")!,
+            streamHandler: { request in
+                let attempt = await history.appendAndCount(request)
+
+                if attempt == 1 {
+                    let errorBody = Data("{\"error\":{\"message\":\"Unsupported field: max_completion_tokens\"}}".utf8)
+                    let body = AsyncThrowingStream<Data, any Error>(Data.self, bufferingPolicy: .unbounded) {
+                        continuation in
+                        continuation.yield(errorBody)
+                        continuation.finish()
+                    }
+
+                    return AIHTTPStreamResponse(
+                        response: httpResponse(statusCode: 400),
+                        body: body
+                    )
+                }
+
+                return AIHTTPStreamResponse(
+                    response: httpResponse(),
+                    body: sseStream([
+                        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n",
+                        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
+                        "data: [DONE]\n",
+                    ])
+                )
+            }
+        )
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Hi")],
+            maxTokens: 64,
+            retryPolicy: .none
+        )
+        let response = try await provider.stream(request).collect()
+
+        let requests = await history.requests
+        XCTAssertEqual(requests.count, 2)
+
+        let firstRequest = try XCTUnwrap(requests[0].httpBody)
+        let secondRequest = try XCTUnwrap(requests[1].httpBody)
+        let firstJSON = try bodyJSON(firstRequest)
+        let secondJSON = try bodyJSON(secondRequest)
+
+        XCTAssertEqual(firstJSON["max_completion_tokens"] as? Int, 64)
+        XCTAssertNil(secondJSON["max_completion_tokens"])
+        XCTAssertEqual(secondJSON["max_tokens"] as? Int, 64)
+        XCTAssertEqual(response.text, "Hello")
+        XCTAssertTrue(response.warnings.contains(where: { $0.code == "legacy_max_tokens_fallback" }))
+    }
+}
+
+final class OpenAIRequestModelTests: XCTestCase {
+    func test_customChatModelIDIsForwarded() async throws {
+        let capture = RequestCapture()
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (completionJSON(model: "gpt-custom"), httpResponse())
+        }
+
+        let request = AIRequest(model: .gpt(.custom("gpt-custom")), messages: [.user("Hi")])
+        _ = try await provider.complete(request)
+
+        let json = try await bodyJSON(capture)
+        XCTAssertEqual(json["model"] as? String, "gpt-custom")
+    }
+
+    func test_customEmbeddingModelIDIsForwarded() async throws {
+        let capture = RequestCapture()
+
+        let responseData = """
+            {
+                "model": "text-embedding-custom",
+                "data": [{"index": 0, "embedding": [0.1]}],
+                "usage": {"total_tokens": 5}
+            }
+            """.data(using: .utf8)!
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (responseData, httpResponse())
+        }
+
+        let request = AIEmbeddingRequest(
+            model: .openAIEmbedding(.custom("text-embedding-custom")),
+            inputs: [.text("swift")]
+        )
+        _ = try await provider.embed(request)
+
+        let json = try await bodyJSON(capture)
+        XCTAssertEqual(json["model"] as? String, "text-embedding-custom")
+    }
+}
+
+final class OpenAIEmbeddingRequestBuilderTests: XCTestCase {
+    func test_singleEmbeddingInputSerializesAsString() async throws {
+        let capture = RequestCapture()
+
+        let responseData = """
+            {
+                "model": "text-embedding-3-small",
+                "data": [{"index": 0, "embedding": [0.1]}],
+                "usage": {"total_tokens": 5}
+            }
+            """.data(using: .utf8)!
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (responseData, httpResponse())
+        }
+
+        let request = AIEmbeddingRequest(
+            model: .openAIEmbedding(.textEmbedding3Small),
+            inputs: [.text("swift concurrency")]
+        )
+        _ = try await provider.embed(request)
+
+        let json = try await bodyJSON(capture)
+        XCTAssertEqual(json["input"] as? String, "swift concurrency")
+    }
+
+    func test_dimensionsAreDroppedForUnsupportedEmbeddingModelsWithWarning() async throws {
+        let capture = RequestCapture()
+
+        let responseData = """
+            {
+                "model": "text-embedding-custom",
+                "data": [{"index": 0, "embedding": [0.1]}],
+                "usage": {"total_tokens": 5}
+            }
+            """.data(using: .utf8)!
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (responseData, httpResponse())
+        }
+
+        let request = AIEmbeddingRequest(
+            model: .openAIEmbedding(.custom("text-embedding-custom")),
+            inputs: [.text("swift")],
+            dimensions: 128
+        )
+        let response = try await provider.embed(request)
+
+        let json = try await bodyJSON(capture)
+        XCTAssertNil(json["dimensions"])
+        XCTAssertTrue(response.warnings.contains(where: { $0.code == "unsupported_embedding_dimensions" }))
+    }
+}
+
+final class OpenAIAdditionalErrorMappingTests: XCTestCase {
+    func test_400MapsToInvalidRequest() async throws {
+        let provider = makeProvider { _ in
+            (Data("{\"error\":{\"message\":\"Bad request\"}}".utf8), httpResponse(statusCode: 400))
+        }
+
+        let request = AIRequest(model: .gpt(.gpt4o), messages: [.user("Hi")], retryPolicy: .none)
+
+        do {
+            _ = try await provider.complete(request)
+            XCTFail("Expected invalidRequest")
+        } catch let error as AIError {
+            if case .invalidRequest(let message) = error {
+                XCTAssertEqual(message, "Bad request")
+            } else {
+                XCTFail("Expected invalidRequest, got \(error)")
+            }
+        }
+    }
+
+    func test_transportFailureMapsToNetworkError() async throws {
+        struct TransportFailure: Error {}
+
+        let provider = makeProvider { _ in
+            throw TransportFailure()
+        }
+
+        let request = AIRequest(model: .gpt(.gpt4o), messages: [.user("Hi")], retryPolicy: .none)
+
+        do {
+            _ = try await provider.complete(request)
+            XCTFail("Expected networkError")
+        } catch let error as AIError {
+            if case .networkError(let context) = error {
+                XCTAssertEqual(context.underlyingType, String(reflecting: TransportFailure.self))
+            } else {
+                XCTFail("Expected networkError, got \(error)")
+            }
+        }
+    }
+
+    func test_decodingFailureMapsToDecodingError() async throws {
+        let provider = makeProvider { _ in
+            (Data("{not-json}".utf8), httpResponse())
+        }
+
+        let request = AIRequest(model: .gpt(.gpt4o), messages: [.user("Hi")])
+
+        do {
+            _ = try await provider.complete(request)
+            XCTFail("Expected decodingError")
+        } catch let error as AIError {
+            if case .decodingError = error {
+                // expected
+            } else {
+                XCTFail("Expected decodingError, got \(error)")
+            }
+        }
+    }
+}
+
+final class OpenAIStreamInterruptionTests: XCTestCase {
+    func test_streamWithoutFinishSurfacesStreamInterrupted() async throws {
+        let provider = makeProvider(
+            streamHandler: { _ in
+                AIHTTPStreamResponse(
+                    response: httpResponse(),
+                    body: sseStream([
+                        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n"
+                    ])
+                )
+            }
+        )
+
+        let request = AIRequest(model: .gpt(.gpt4o), messages: [.user("Hi")])
+
+        do {
+            _ = try await provider.stream(request).collect()
+            XCTFail("Expected streamInterrupted")
+        } catch let error as AIError {
+            XCTAssertEqual(error, .streamInterrupted)
+        }
     }
 }

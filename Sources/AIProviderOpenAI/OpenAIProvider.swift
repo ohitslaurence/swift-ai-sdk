@@ -33,14 +33,14 @@ public struct OpenAIProvider: AIProvider, Sendable {
         return try await AITimeoutController.withTimeout(request.timeout.total, kind: .total) {
             try await RetryExecutor.execute(policy: request.retryPolicy) { _ in
                 try await AITimeoutController.withTimeout(request.timeout.step, kind: .step) {
-                    let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: false)
-                    let data = try await performDataRequest(
-                        preparedRequest.urlRequest,
-                        model: request.model,
-                        errorMapper: errorMapper
+                    let preparedRequest = try await prepareCompletionRequest(
+                        for: request,
+                        requestBuilder: requestBuilder,
+                        errorMapper: errorMapper,
+                        stream: false
                     )
 
-                    return try responseParser.parse(data, warnings: preparedRequest.warnings)
+                    return try responseParser.parse(preparedRequest.data, warnings: preparedRequest.warnings)
                 }
             }
         }
@@ -54,14 +54,13 @@ public struct OpenAIProvider: AIProvider, Sendable {
         let streamParser = OpenAIStreamParser()
 
         return RetryExecutor.executeStream(policy: request.retryPolicy, timeout: request.timeout) { _ in
-            let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: true)
-            let streamResponse = try await performStreamRequest(
-                preparedRequest.urlRequest,
-                model: request.model,
+            let preparedRequest = try await prepareStreamRequest(
+                for: request,
+                requestBuilder: requestBuilder,
                 errorMapper: errorMapper
             )
 
-            return streamParser.parse(streamResponse, warnings: preparedRequest.warnings)
+            return streamParser.parse(preparedRequest.response, warnings: preparedRequest.warnings)
         }
     }
 
@@ -75,14 +74,14 @@ public struct OpenAIProvider: AIProvider, Sendable {
         return try await AITimeoutController.withTimeout(request.timeout.total, kind: .total) {
             try await RetryExecutor.execute(policy: request.retryPolicy) { _ in
                 try await AITimeoutController.withTimeout(request.timeout.step, kind: .step) {
-                    let urlRequest = try requestBuilder.prepareRequest(for: request)
+                    let preparedRequest = try requestBuilder.prepareRequest(for: request)
                     let data = try await performDataRequest(
-                        urlRequest,
+                        preparedRequest.urlRequest,
                         model: request.model,
                         errorMapper: errorMapper
                     )
 
-                    return try responseParser.parse(data)
+                    return try responseParser.parse(data, warnings: preparedRequest.warnings)
                 }
             }
         }
@@ -206,4 +205,85 @@ public struct OpenAIProvider: AIProvider, Sendable {
 
         return collectedBody
     }
+
+    private func prepareCompletionRequest(
+        for request: AIRequest,
+        requestBuilder: OpenAIRequestBuilder,
+        errorMapper: OpenAIErrorMapper,
+        stream: Bool
+    ) async throws -> OpenAIPreparedRequestResult {
+        let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: stream)
+
+        do {
+            let data = try await performDataRequest(
+                preparedRequest.urlRequest,
+                model: request.model,
+                errorMapper: errorMapper
+            )
+
+            return OpenAIPreparedRequestResult(data: data, warnings: preparedRequest.warnings)
+        } catch let error as AIError {
+            guard requestBuilder.shouldFallbackToLegacyMaxTokens(for: request, after: error) else {
+                throw error
+            }
+
+            let fallbackRequest = try requestBuilder.prepareRequest(
+                for: request,
+                stream: stream,
+                tokenLimitFieldStrategy: .maxTokens
+            )
+            let data = try await performDataRequest(
+                fallbackRequest.urlRequest,
+                model: request.model,
+                errorMapper: errorMapper
+            )
+
+            return OpenAIPreparedRequestResult(data: data, warnings: fallbackRequest.warnings)
+        }
+    }
+
+    private func prepareStreamRequest(
+        for request: AIRequest,
+        requestBuilder: OpenAIRequestBuilder,
+        errorMapper: OpenAIErrorMapper
+    ) async throws -> OpenAIPreparedStreamRequestResult {
+        let preparedRequest = try requestBuilder.prepareRequest(for: request, stream: true)
+
+        do {
+            let response = try await performStreamRequest(
+                preparedRequest.urlRequest,
+                model: request.model,
+                errorMapper: errorMapper
+            )
+
+            return OpenAIPreparedStreamRequestResult(response: response, warnings: preparedRequest.warnings)
+        } catch let error as AIError {
+            guard requestBuilder.shouldFallbackToLegacyMaxTokens(for: request, after: error) else {
+                throw error
+            }
+
+            let fallbackRequest = try requestBuilder.prepareRequest(
+                for: request,
+                stream: true,
+                tokenLimitFieldStrategy: .maxTokens
+            )
+            let response = try await performStreamRequest(
+                fallbackRequest.urlRequest,
+                model: request.model,
+                errorMapper: errorMapper
+            )
+
+            return OpenAIPreparedStreamRequestResult(response: response, warnings: fallbackRequest.warnings)
+        }
+    }
+}
+
+private struct OpenAIPreparedRequestResult {
+    let data: Data
+    let warnings: [AIProviderWarning]
+}
+
+private struct OpenAIPreparedStreamRequestResult {
+    let response: AIHTTPStreamResponse
+    let warnings: [AIProviderWarning]
 }

@@ -2,6 +2,10 @@
 
 > Second provider. Stress-tests the abstraction - if two very different APIs both fit cleanly, the protocol is right.
 
+## Review History
+
+- 2026-03-10: Comprehensive implementation review completed; provider behavior, tests, and full-suite validation were brought back into alignment with this spec.
+
 ## Goal
 
 Implement `OpenAIProvider` conforming to `AIProvider`, targeting the OpenAI Chat Completions API for generation plus the OpenAI Embeddings API for vector generation.

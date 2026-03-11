@@ -127,6 +127,42 @@ private struct ManualSchema: AIStructured, Equatable {
     }
 }
 
+private struct ContainsDrivenDecoding: AIStructured, Equatable {
+    let value: String
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if container.contains(.value) {
+            value = try container.decode(String.self, forKey: .value)
+        } else {
+            value = "fallback"
+        }
+    }
+}
+
+private struct DecodeNilDrivenDecoding: AIStructured, Equatable {
+    let value: String?
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if try container.decodeNil(forKey: .value) {
+            value = nil
+        } else {
+            value = "fallback"
+        }
+    }
+}
+
+private final class RequiredRecursiveNode: Codable {
+    let child: RequiredRecursiveNode
+
+    init(child: RequiredRecursiveNode) {
+        self.child = child
+    }
+}
+
 // MARK: - Schema Generation Tests
 
 @Suite("Structured Output - Schema Generation")
@@ -273,6 +309,36 @@ struct SchemaGenerationTests {
         }
 
         #expect(description == "A custom value")
+    }
+}
+
+@Suite("Structured Output - Unsupported Schema Shapes")
+struct UnsupportedSchemaShapeTests {
+    @Test("custom decoders using contains still infer matching keyed shapes")
+    func containsDrivenDecodingSchema() throws {
+        let schema = try ContainsDrivenDecoding.jsonSchema
+
+        guard case .object(let properties, let required, _, _) = schema else {
+            Issue.record("Expected object schema")
+            return
+        }
+
+        #expect(properties["value"] == .string())
+        #expect(required == ["value"])
+    }
+
+    @Test("custom decoders using decodeNil are rejected")
+    func decodeNilDrivenDecodingThrows() {
+        #expect(throws: AIError.self) {
+            try DecodeNilDrivenDecoding.jsonSchema
+        }
+    }
+
+    @Test("required recursive types are rejected")
+    func requiredRecursiveTypeThrows() {
+        #expect(throws: AIError.self) {
+            try AIJSONSchemaGenerator.generateSchema(for: RequiredRecursiveNode.self)
+        }
     }
 }
 

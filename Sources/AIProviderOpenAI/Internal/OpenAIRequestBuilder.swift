@@ -31,12 +31,27 @@ struct OpenAIRequestBuilder {
         self.configuration = configuration
     }
 
-    func prepareRequest(for request: AIRequest, stream: Bool) throws -> OpenAIPreparedRequest {
+    func prepareRequest(
+        for request: AIRequest,
+        stream: Bool,
+        tokenLimitFieldStrategy: OpenAITokenLimitFieldStrategy = .maxCompletionTokens
+    ) throws -> OpenAIPreparedRequest {
         var warnings: [AIProviderWarning] = []
 
         let isReasoning = isReasoningModel(request.model)
         let stopSequences = normalizedStopSequences(for: request, isReasoning: isReasoning, warnings: &warnings)
         checkReasoningModelWarnings(for: request, isReasoning: isReasoning, warnings: &warnings)
+
+        if tokenLimitFieldStrategy == .maxTokens, request.maxTokens != nil {
+            warnings.append(
+                AIProviderWarning(
+                    code: "legacy_max_tokens_fallback",
+                    message:
+                        "The compatible backend rejected `max_completion_tokens`; the request was retried with legacy `max_tokens`.",
+                    parameter: "maxTokens"
+                )
+            )
+        }
 
         let messages = try buildMessages(
             systemPrompt: request.systemPrompt,
@@ -60,7 +75,8 @@ struct OpenAIRequestBuilder {
             OpenAIRequestPayload(
                 model: request.model.id,
                 messages: messages,
-                maxCompletionTokens: request.maxTokens,
+                maxCompletionTokens: tokenLimitFieldStrategy == .maxCompletionTokens ? request.maxTokens : nil,
+                maxTokens: tokenLimitFieldStrategy == .maxTokens ? request.maxTokens : nil,
                 temperature: request.temperature,
                 topP: request.topP,
                 stop: stopSequences,
@@ -96,6 +112,18 @@ struct OpenAIRequestBuilder {
 
     private func isReasoningModel(_ model: AIModel) -> Bool {
         Self.reasoningModelPrefixes.contains(where: { model.id.hasPrefix($0) })
+    }
+
+    func shouldFallbackToLegacyMaxTokens(for request: AIRequest, after error: AIError) -> Bool {
+        guard request.maxTokens != nil, configuration.baseURL != nil, !isReasoningModel(request.model) else {
+            return false
+        }
+
+        guard case .invalidRequest(let message) = error else {
+            return false
+        }
+
+        return message.lowercased().contains("max_completion_tokens")
     }
 
     private func isStopUnsupported(_ model: AIModel) -> Bool {
@@ -340,10 +368,16 @@ struct OpenAIPreparedRequest {
     let warnings: [AIProviderWarning]
 }
 
+enum OpenAITokenLimitFieldStrategy {
+    case maxCompletionTokens
+    case maxTokens
+}
+
 private struct OpenAIRequestPayload: Encodable {
     let model: String
     let messages: [OpenAIRequestMessage]
     let maxCompletionTokens: Int?
+    let maxTokens: Int?
     let temperature: Double?
     let topP: Double?
     let stop: [String]?
@@ -359,6 +393,7 @@ private struct OpenAIRequestPayload: Encodable {
         case model
         case messages
         case maxCompletionTokens = "max_completion_tokens"
+        case maxTokens = "max_tokens"
         case temperature
         case topP = "top_p"
         case stop
