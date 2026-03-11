@@ -50,8 +50,8 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-opensource@example.com.
+reported to the project maintainers by
+[contacting @ohitslaurence directly on GitHub](https://github.com/ohitslaurence).
 
 All complaints will be reviewed and investigated promptly and fairly.
 

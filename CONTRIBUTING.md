@@ -38,3 +38,5 @@ Thanks for helping improve Swift AI SDK.
 
 - Use the bug report template for defects.
 - Use the feature request template for enhancements.
+
+Please review our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.

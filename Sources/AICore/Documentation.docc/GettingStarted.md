@@ -8,7 +8,7 @@ Add the package dependency to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ohitslaurence/swift-ai-sdk", branch: "main")
+    .package(url: "https://github.com/ohitslaurence/swift-ai-sdk", from: "0.1.0")
 ]
 ```
 
