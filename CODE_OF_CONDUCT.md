@@ -51,7 +51,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers by
-[opening a GitHub issue](https://github.com/ohitslaurence/swift-ai-sdk/issues).
+[contacting @ohitslaurence directly on GitHub](https://github.com/ohitslaurence).
 
 All complaints will be reviewed and investigated promptly and fairly.
 
