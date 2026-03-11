@@ -20,6 +20,13 @@ Fight entropy. Leave the codebase better than you found it.
 
 - All changes to `main` must go through a pull request for review. Do not push directly to `main`.
 
+## Releases
+
+- The project uses [Semantic Versioning](https://semver.org/). While on `0.x`, minor bumps may include breaking changes.
+- Update `CHANGELOG.md` with every user-facing change under an `[Unreleased]` section. Follow [Keep a Changelog](https://keepachangelog.com/) format.
+- To cut a release: move the `[Unreleased]` entries into a new `[x.y.z]` section with the date, commit, tag, and push the tag. The `release.yml` GitHub Action builds, tests, and creates a GitHub Release with the changelog notes automatically.
+- Do not tag a release without confirming `swift build` and `swift test` pass locally first.
+
 ## Reference Repos
 
 - Vercel AI SDK: https://github.com/vercel/ai
