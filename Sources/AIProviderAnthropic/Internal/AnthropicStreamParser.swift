@@ -161,9 +161,15 @@ struct AnthropicStreamParser {
 
                 continuation.yield(.delta(.text(text)))
             case "input_json_delta":
-                guard let toolID = state.toolIDsByIndex[event.index], let jsonDelta = event.delta.partialJSON else {
+                guard let toolID = state.toolIDsByIndex[event.index] else {
                     throw AIError.decodingError(
                         AIErrorContext(message: "Anthropic tool input delta arrived before its tool_use start")
+                    )
+                }
+
+                guard let jsonDelta = event.delta.partialJSON else {
+                    throw AIError.decodingError(
+                        AIErrorContext(message: "Anthropic input_json_delta events must include partial_json")
                     )
                 }
 

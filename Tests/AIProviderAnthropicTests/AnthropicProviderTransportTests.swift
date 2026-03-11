@@ -936,6 +936,72 @@ final class AnthropicProviderTransportTests: XCTestCase {
         }
     }
 
+    func test_stream_rejectsMalformedErrorEvents() async {
+        struct Case: Sendable {
+            let payload: String
+            let expectedMessage: String
+        }
+
+        let cases = [
+            Case(
+                payload: #"{"type":"error","error":{"message":"Overloaded"}}"#,
+                expectedMessage: "Anthropic stream error events must include a non-empty error type and message"
+            ),
+            Case(
+                payload: #"{"type":"error","error":{"type":"overloaded_error","message":"   "}}"#,
+                expectedMessage: "Anthropic stream error events must include a non-empty error type and message"
+            ),
+        ]
+
+        for testCase in cases {
+            let provider = AnthropicProvider(
+                apiKey: "test-key",
+                transport: MockTransport(
+                    dataHandler: { _ in
+                        throw AIError.unsupportedFeature("unused")
+                    },
+                    streamHandler: { _ in
+                        AIHTTPStreamResponse(
+                            response: makeHTTPResponse(statusCode: 200),
+                            body: AsyncThrowingStream<Data, any Error>(Data.self, bufferingPolicy: .unbounded) {
+                                continuation in
+                                continuation.yield(
+                                    Data(
+                                        """
+                                        event: message_start
+                                        data: {"message":{"id":"msg_stream_error","model":"claude-sonnet-4-5"}}
+
+                                        event: error
+                                        data: \(testCase.payload)
+
+                                        """.utf8
+                                    )
+                                )
+                                continuation.finish()
+                            }
+                        )
+                    }
+                )
+            )
+
+            do {
+                _ = try await provider.stream(
+                    AIRequest(model: .claude(.sonnet45), messages: [.user("Hello")], retryPolicy: .none)
+                ).collect()
+                XCTFail("Expected decoding error")
+            } catch let error as AIError {
+                guard case .decodingError(let context) = error else {
+                    XCTFail("Expected decoding error, got \(error)")
+                    continue
+                }
+
+                XCTAssertEqual(context.message, testCase.expectedMessage)
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
     func test_stream_rejectsMalformedTextDeltaPayload() async {
         let provider = AnthropicProvider(
             apiKey: "test-key",
@@ -979,6 +1045,57 @@ final class AnthropicProviderTransportTests: XCTestCase {
             }
 
             XCTAssertEqual(context.message, "Anthropic text deltas must include text")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test_stream_rejectsMalformedToolInputDeltaPayload() async {
+        let provider = AnthropicProvider(
+            apiKey: "test-key",
+            transport: MockTransport(
+                dataHandler: { _ in
+                    throw AIError.unsupportedFeature("unused")
+                },
+                streamHandler: { _ in
+                    AIHTTPStreamResponse(
+                        response: makeHTTPResponse(statusCode: 200),
+                        body: AsyncThrowingStream<Data, any Error>(Data.self, bufferingPolicy: .unbounded) {
+                            continuation in
+                            continuation.yield(
+                                Data(
+                                    """
+                                    event: message_start
+                                    data: {"message":{"id":"msg_bad_tool_delta","model":"claude-sonnet-4-5"}}
+
+                                    event: content_block_start
+                                    data: {"index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup_weather"}}
+
+                                    event: content_block_delta
+                                    data: {"index":0,"delta":{"type":"input_json_delta"}}
+
+                                    """.utf8
+                                )
+                            )
+                            continuation.finish()
+                        }
+                    )
+                }
+            )
+        )
+
+        do {
+            _ = try await provider.stream(
+                AIRequest(model: .claude(.sonnet45), messages: [.user("Hello")], retryPolicy: .none)
+            ).collect()
+            XCTFail("Expected decoding error")
+        } catch let error as AIError {
+            guard case .decodingError(let context) = error else {
+                XCTFail("Expected decoding error, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(context.message, "Anthropic input_json_delta events must include partial_json")
         } catch {
             XCTFail("Unexpected error: \(error)")
         }

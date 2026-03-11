@@ -28,28 +28,33 @@ struct AnthropicErrorMapper {
             )
         }
 
-        let message = payload.message?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedMessage = (message?.isEmpty == false) ? message! : "Anthropic stream failed"
+        guard let type = payload.type?.trimmingCharacters(in: .whitespacesAndNewlines), !type.isEmpty,
+            let message = payload.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty
+        else {
+            return .decodingError(
+                AIErrorContext(message: "Anthropic stream error events must include a non-empty error type and message")
+            )
+        }
 
-        switch payload.type {
+        switch type {
         case "invalid_request_error":
-            return .invalidRequest(resolvedMessage)
+            return .invalidRequest(message)
         case "authentication_error":
             return .authenticationFailed
         case "permission_error":
-            return .serverError(statusCode: 403, message: resolvedMessage)
+            return .serverError(statusCode: 403, message: message)
         case "not_found_error":
             return .modelNotFound(model.id)
         case "request_too_large":
-            return .serverError(statusCode: 413, message: resolvedMessage)
+            return .serverError(statusCode: 413, message: message)
         case "rate_limit_error":
             return .rateLimited(retryAfter: nil)
         case "overloaded_error":
-            return .serverError(statusCode: 529, message: resolvedMessage)
-        case "api_error", nil:
-            return .serverError(statusCode: 500, message: resolvedMessage)
-        case let type?:
-            return .serverError(statusCode: 500, message: "\(type): \(resolvedMessage)")
+            return .serverError(statusCode: 529, message: message)
+        case "api_error":
+            return .serverError(statusCode: 500, message: message)
+        default:
+            return .serverError(statusCode: 500, message: "\(type): \(message)")
         }
     }
 
