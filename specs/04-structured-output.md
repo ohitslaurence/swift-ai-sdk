@@ -60,7 +60,13 @@ public struct AIStructuredResponse<T: Sendable>: Sendable {
     public let response: AIResponse
     public let attempts: Int
 
-    public init(value: T, response: AIResponse, attempts: Int)
+    public init(
+        value: T,
+        response: AIResponse,
+        attempts: Int,
+        usage: AIUsage? = nil,
+        warnings: [AIProviderWarning]? = nil
+    )
 
     public var usage: AIUsage { get }
     public var warnings: [AIProviderWarning] { get }

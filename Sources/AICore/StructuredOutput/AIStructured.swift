@@ -17,7 +17,7 @@ public typealias AIRepairHandler =
 /// - Structs and nested structs with synthesized keyed `Codable`
 /// - `String`, `Int`, `Double`, `Bool`, `Decimal`, `Date`
 /// - `Optional<T>`
-/// - `Array<T>`
+/// - `Array<T>` when nested inside a keyed structured type
 /// - String-backed enums that also conform to `CaseIterable`
 /// - `CodingKeys`
 ///
