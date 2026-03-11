@@ -23,7 +23,7 @@ final class CoreTypesTests: XCTestCase {
             tools: [tool],
             toolChoice: .tool("weather"),
             allowParallelToolCalls: false,
-            responseFormat: .jsonSchema(schema),
+            responseFormat: .jsonSchema(schema, name: "weather-response"),
             maxTokens: 512,
             temperature: 0.2,
             topP: 0.9,
@@ -40,7 +40,7 @@ final class CoreTypesTests: XCTestCase {
         XCTAssertEqual(request.tools.count, 1)
         XCTAssertEqual(request.toolChoice, .tool("weather"))
         XCTAssertEqual(request.allowParallelToolCalls, false)
-        XCTAssertEqual(request.responseFormat, .jsonSchema(schema))
+        XCTAssertEqual(request.responseFormat, .jsonSchema(schema, name: "weather-response"))
         XCTAssertEqual(request.maxTokens, 512)
         XCTAssertEqual(request.temperature, 0.2)
         XCTAssertEqual(request.topP, 0.9)

@@ -408,6 +408,65 @@ final class OpenAIJSONSchemaTests: XCTestCase {
         XCTAssertEqual(jsonSchema["strict"] as? Bool, true)
         XCTAssertNotNil(jsonSchema["schema"])
     }
+
+    func test_jsonSchemaResponseFormatUsesProvidedSchemaName() async throws {
+        let capture = RequestCapture()
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (completionJSON(), httpResponse())
+        }
+
+        let schema = AIJSONSchema.object(
+            properties: ["name": .string()],
+            required: ["name"]
+        )
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Name?")],
+            responseFormat: .jsonSchema(schema, name: " recipe_v1 ")
+        )
+        _ = try await provider.complete(request)
+
+        let json = try await bodyJSON(capture)
+        let responseFormat = json["response_format"] as! [String: Any]
+        let jsonSchema = responseFormat["json_schema"] as! [String: Any]
+        XCTAssertEqual(jsonSchema["name"] as? String, "recipe_v1")
+    }
+
+    func test_jsonSchemaResponseFormatRejectsInvalidProvidedSchemaNameLocally() async throws {
+        let provider = makeProvider { _ in
+            XCTFail("Provider should reject invalid schema names before transport")
+            return (completionJSON(), httpResponse())
+        }
+
+        let schema = AIJSONSchema.object(
+            properties: ["name": .string()],
+            required: ["name"]
+        )
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Name?")],
+            responseFormat: .jsonSchema(schema, name: "bad name!")
+        )
+
+        do {
+            _ = try await provider.complete(request)
+            XCTFail("Expected invalidRequest")
+        } catch let error as AIError {
+            guard case .invalidRequest(let message) = error else {
+                XCTFail("Expected invalidRequest, got \(error)")
+                return
+            }
+
+            XCTAssertEqual(
+                message,
+                "OpenAI JSON Schema names must match ^[A-Za-z0-9_-]{1,64}$; received 'bad name!'."
+            )
+        }
+    }
 }
 
 // MARK: - Test 10: max_completion_tokens

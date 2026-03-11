@@ -37,7 +37,7 @@ final class ToolAndSchemaTests: XCTestCase {
             description: "Root schema"
         )
         let choice = AIToolChoice.tool("weather")
-        let format = AIResponseFormat.jsonSchema(schema)
+        let format = AIResponseFormat.jsonSchema(schema, name: "status_payload")
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 

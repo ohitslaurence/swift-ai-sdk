@@ -601,13 +601,14 @@ public indirect enum AIJSONSchema: Sendable, Codable {
 public enum AIResponseFormat: Sendable {
     case text
     case json
-    case jsonSchema(AIJSONSchema)
+    case jsonSchema(AIJSONSchema, name: String? = nil)
 }
 ```
 
 Normalization rule:
 
 - `.json` means "return valid arbitrary JSON".
+- `.jsonSchema(..., name:)` allows higher-level helpers to preserve a stable schema name for providers that require one.
 - If a provider does not expose a dedicated JSON-object mode but does expose schema mode, higher-level helpers or provider request builders may normalize `.json` to `.jsonSchema(.anyJSON)` before the request is serialized.
 - That normalization must preserve user intent and should not require prompt injection when native schema mode is available.
 

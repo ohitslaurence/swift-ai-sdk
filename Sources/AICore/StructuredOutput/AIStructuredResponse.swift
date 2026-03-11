@@ -9,15 +9,26 @@ public struct AIStructuredResponse<T: Sendable>: Sendable {
     /// The number of attempts made (1 = first try succeeded).
     public let attempts: Int
 
-    public init(value: T, response: AIResponse, attempts: Int) {
+    private let totalUsage: AIUsage
+    private let accumulatedWarnings: [AIProviderWarning]
+
+    public init(
+        value: T,
+        response: AIResponse,
+        attempts: Int,
+        usage: AIUsage? = nil,
+        warnings: [AIProviderWarning]? = nil
+    ) {
         self.value = value
         self.response = response
         self.attempts = attempts
+        self.totalUsage = usage ?? response.usage
+        self.accumulatedWarnings = warnings ?? response.warnings
     }
 
-    /// Token usage from the underlying response.
-    public var usage: AIUsage { response.usage }
+    /// Token usage across the full structured-output operation.
+    public var usage: AIUsage { totalUsage }
 
-    /// Provider warnings from the underlying response.
-    public var warnings: [AIProviderWarning] { response.warnings }
+    /// Provider warnings accumulated across the structured-output operation.
+    public var warnings: [AIProviderWarning] { accumulatedWarnings }
 }

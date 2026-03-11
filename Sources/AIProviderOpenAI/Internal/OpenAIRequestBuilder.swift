@@ -59,7 +59,7 @@ struct OpenAIRequestBuilder {
             isReasoning: isReasoning
         )
 
-        let responseFormat = openAIResponseFormat(for: request.responseFormat)
+        let responseFormat = try openAIResponseFormat(for: request.responseFormat)
         let tools = request.tools.isEmpty ? nil : request.tools.map(toolPayload(from:))
         let toolChoice = try openAIToolChoice(for: request)
         let parallelToolCalls = request.allowParallelToolCalls
@@ -336,16 +336,32 @@ struct OpenAIRequestBuilder {
         }
     }
 
-    private func openAIResponseFormat(for format: AIResponseFormat) -> OpenAIResponseFormat? {
+    private func openAIResponseFormat(for format: AIResponseFormat) throws -> OpenAIResponseFormat? {
         switch format {
         case .text:
             return nil
         case .json:
             return .jsonObject
-        case .jsonSchema(let schema):
-            let name = schemaName(for: schema)
+        case .jsonSchema(let schema, let providedName):
+            let name = try validatedSchemaName(providedName ?? schemaName(for: schema))
             return .jsonSchema(name: name, schema: schema)
         }
+    }
+
+    private func validatedSchemaName(_ rawName: String) throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nameRange = NSRange(name.startIndex..<name.endIndex, in: name)
+        let pattern = "^[A-Za-z0-9_-]{1,64}$"
+
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+            regex.firstMatch(in: name, options: [], range: nameRange) != nil
+        else {
+            throw AIError.invalidRequest(
+                "OpenAI JSON Schema names must match ^[A-Za-z0-9_-]{1,64}$; received '\(rawName)'."
+            )
+        }
+
+        return name
     }
 
     private func schemaName(for schema: AIJSONSchema) -> String {
