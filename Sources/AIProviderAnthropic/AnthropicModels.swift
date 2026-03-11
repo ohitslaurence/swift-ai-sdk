@@ -8,6 +8,15 @@ extension AIModel {
         case haiku45
         case custom(String)
 
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var opus4_6: Self { .opus46 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var sonnet4_6: Self { .sonnet46 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var sonnet4_5: Self { .sonnet45 }
+        // swift-format-ignore: AlwaysUseLowerCamelCase
+        public static var haiku4_5: Self { .haiku45 }
+
         public var model: AIModel {
             switch self {
             case .opus46:

@@ -19,6 +19,10 @@ final class AnthropicProviderSmokeTests: XCTestCase {
         XCTAssertEqual(AIModel.claude(.sonnet45), AIModel("claude-sonnet-4-5", provider: "anthropic"))
         XCTAssertEqual(AIModel.claude(.sonnet46), AIModel("claude-sonnet-4-6", provider: "anthropic"))
         XCTAssertEqual(AIModel.claude(.opus46), AIModel("claude-opus-4-6", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.haiku4_5), AIModel("claude-haiku-4-5", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.sonnet4_5), AIModel("claude-sonnet-4-5", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.sonnet4_6), AIModel("claude-sonnet-4-6", provider: "anthropic"))
+        XCTAssertEqual(AIModel.claude(.opus4_6), AIModel("claude-opus-4-6", provider: "anthropic"))
         XCTAssertEqual(
             AIModel.claude(.custom("claude-custom-deployment")),
             AIModel("claude-custom-deployment", provider: "anthropic")

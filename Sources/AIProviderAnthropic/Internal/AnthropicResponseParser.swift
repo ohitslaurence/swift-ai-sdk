@@ -196,11 +196,17 @@ private struct AnthropicResponseContentBlock: Decodable {
     func aiContent() throws -> AIContent {
         switch type {
         case "text":
-            return .text(text ?? "")
-        case "tool_use":
-            guard let id, let name else {
+            guard let text else {
                 throw AIError.decodingError(
-                    AIErrorContext(message: "Anthropic tool_use blocks must include an id and name")
+                    AIErrorContext(message: "Anthropic text blocks must include text")
+                )
+            }
+
+            return .text(text)
+        case "tool_use":
+            guard let id, let name, let input else {
+                throw AIError.decodingError(
+                    AIErrorContext(message: "Anthropic tool_use blocks must include an id, name, and input")
                 )
             }
 
@@ -208,7 +214,7 @@ private struct AnthropicResponseContentBlock: Decodable {
                 AIToolUse(
                     id: id,
                     name: name,
-                    input: try (input ?? .object([:])).asData()
+                    input: try input.asData()
                 )
             )
         default:

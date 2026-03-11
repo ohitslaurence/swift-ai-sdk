@@ -10,6 +10,7 @@ When a request relies on Anthropic features with model-specific support boundari
 
 - `AIRequest.messages` map onto the Anthropic Messages API, including assistant `tool_use` replay and tool-result adaptation through `user` turns.
 - Streaming uses Anthropic SSE events and surfaces text deltas, tool-input deltas, usage updates, and a single terminal finish reason.
+- Anthropic SSE `error` events are normalized into `AIError` values immediately instead of surfacing as interrupted streams.
 - `AIRequest.maxTokens` defaults to `4096` when omitted, matching the provider spec.
 - `embed(_:)` stays on the protocol default unsupported path; this provider does not call unofficial Anthropic embedding endpoints.
 
@@ -19,10 +20,12 @@ When a request relies on Anthropic features with model-specific support boundari
 - `AIResponseFormat.json` is normalized to `.jsonSchema(.anyJSON)` before request serialization.
 - Current Anthropic documentation officially lists native structured-output support for Claude Opus 4.6/4.5, Claude Sonnet 4.6/4.5, and Claude Haiku 4.5.
 - Requests targeting legacy official model IDs or custom Anthropic-compatible deployment IDs still forward native structured-output fields, but surface `AIProviderWarning` values when support is unsupported or unverified.
+- Canonical Claude variants use camelCase names like `.sonnet45`, while compatibility aliases like `.sonnet4_5` remain available for readability and doc stability.
 
 ## Usage and Errors
 
 - Anthropic cache token usage maps into `AIUsage.inputTokenDetails`.
 - HTTP, transport, streaming, and decode failures are normalized into `AIError` values before surfacing to callers.
+- Malformed text, tool-use, or streamed text-delta payloads fail explicitly with `AIError.decodingError` rather than silently defaulting missing fields.
 - Provider `defaultHeaders` are merged first, then `AIRequest.headers`, while auth/version/content-type remain provider-controlled.
 - Request and stream warning metadata is preserved through collected `AIResponse` values, including structured-output compatibility warnings.

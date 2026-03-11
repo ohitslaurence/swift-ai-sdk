@@ -2,7 +2,12 @@ import AICore
 import Foundation
 
 struct AnthropicStreamParser {
-    func parse(_ response: AIHTTPStreamResponse, warnings: [AIProviderWarning] = []) -> AIStream {
+    func parse(
+        _ response: AIHTTPStreamResponse,
+        model: AIModel,
+        errorMapper: AnthropicErrorMapper,
+        warnings: [AIProviderWarning] = []
+    ) -> AIStream {
         AIStream(
             AsyncThrowingStream<AIStreamEvent, any Error>(AIStreamEvent.self, bufferingPolicy: .unbounded) {
                 continuation in
@@ -22,6 +27,8 @@ struct AnthropicStreamParser {
                                     currentEventName: &currentEventName,
                                     currentDataLines: &currentDataLines,
                                     state: &state,
+                                    model: model,
+                                    errorMapper: errorMapper,
                                     continuation: continuation
                                 )
                             }
@@ -34,6 +41,8 @@ struct AnthropicStreamParser {
                                 currentEventName: &currentEventName,
                                 currentDataLines: &currentDataLines,
                                 state: &state,
+                                model: model,
+                                errorMapper: errorMapper,
                                 continuation: continuation
                             )
                         }
@@ -43,6 +52,8 @@ struct AnthropicStreamParser {
                                 named: currentEventName,
                                 dataLines: currentDataLines,
                                 state: &state,
+                                model: model,
+                                errorMapper: errorMapper,
                                 continuation: continuation
                             )
                         }
@@ -74,6 +85,8 @@ struct AnthropicStreamParser {
         currentEventName: inout String?,
         currentDataLines: inout [String],
         state: inout AnthropicStreamState,
+        model: AIModel,
+        errorMapper: AnthropicErrorMapper,
         continuation: AsyncThrowingStream<AIStreamEvent, any Error>.Continuation
     ) throws {
         if line.isEmpty {
@@ -82,6 +95,8 @@ struct AnthropicStreamParser {
                     named: currentEventName,
                     dataLines: currentDataLines,
                     state: &state,
+                    model: model,
+                    errorMapper: errorMapper,
                     continuation: continuation
                 )
             }
@@ -105,6 +120,8 @@ struct AnthropicStreamParser {
         named eventName: String?,
         dataLines: [String],
         state: inout AnthropicStreamState,
+        model: AIModel,
+        errorMapper: AnthropicErrorMapper,
         continuation: AsyncThrowingStream<AIStreamEvent, any Error>.Continuation
     ) throws {
         guard let eventName else {
@@ -136,11 +153,23 @@ struct AnthropicStreamParser {
 
             switch event.delta.type {
             case "text_delta":
-                continuation.yield(.delta(.text(event.delta.text ?? "")))
+                guard let text = event.delta.text else {
+                    throw AIError.decodingError(
+                        AIErrorContext(message: "Anthropic text deltas must include text")
+                    )
+                }
+
+                continuation.yield(.delta(.text(text)))
             case "input_json_delta":
-                guard let toolID = state.toolIDsByIndex[event.index], let jsonDelta = event.delta.partialJSON else {
+                guard let toolID = state.toolIDsByIndex[event.index] else {
                     throw AIError.decodingError(
                         AIErrorContext(message: "Anthropic tool input delta arrived before its tool_use start")
+                    )
+                }
+
+                guard let jsonDelta = event.delta.partialJSON else {
+                    throw AIError.decodingError(
+                        AIErrorContext(message: "Anthropic input_json_delta events must include partial_json")
                     )
                 }
 
@@ -169,6 +198,8 @@ struct AnthropicStreamParser {
         case "message_stop":
             state.didEmitFinish = true
             continuation.yield(.finish(state.pendingFinishReason ?? .stop))
+        case "error":
+            throw errorMapper.mapStreamError(body: data, model: model)
         default:
             return
         }
