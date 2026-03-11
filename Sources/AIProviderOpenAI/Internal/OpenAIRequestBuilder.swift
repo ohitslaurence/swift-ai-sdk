@@ -342,8 +342,8 @@ struct OpenAIRequestBuilder {
             return nil
         case .json:
             return .jsonObject
-        case .jsonSchema(let schema):
-            let name = schemaName(for: schema)
+        case .jsonSchema(let schema, let providedName):
+            let name = providedName ?? schemaName(for: schema)
             return .jsonSchema(name: name, schema: schema)
         }
     }

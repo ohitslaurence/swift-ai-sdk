@@ -73,7 +73,7 @@ struct AnthropicRequestBuilder {
     }
 
     private func outputConfig(for responseFormat: AIResponseFormat) -> AnthropicOutputConfig? {
-        guard case .jsonSchema(let schema) = responseFormat else {
+        guard case .jsonSchema(let schema, _) = responseFormat else {
             return nil
         }
 

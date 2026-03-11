@@ -10,7 +10,7 @@ public typealias AIRepairHandler =
 /// A Codable type that can be used as a structured output target.
 ///
 /// The default `jsonSchema` implementation auto-generates a schema for a supported subset
-/// of Swift types using Mirror-based reflection. It may throw `AIError.unsupportedFeature`
+/// of Swift types using safe decode probing. It may throw `AIError.unsupportedFeature`
 /// when the type cannot be safely reflected.
 ///
 /// Supported shapes:
@@ -18,14 +18,13 @@ public typealias AIRepairHandler =
 /// - `String`, `Int`, `Double`, `Bool`, `Decimal`, `Date`
 /// - `Optional<T>`
 /// - `Array<T>`
-/// - String-backed enums
+/// - String-backed enums that also conform to `CaseIterable`
 /// - `CodingKeys`
 ///
 /// Unsupported shapes throw `AIError.unsupportedFeature`:
 /// - Custom `init(from:)` / `encode(to:)` that change the serialized shape
 /// - Recursive or self-referential object graphs
 /// - Associated-value enums
-/// - Top-level unkeyed containers
 /// - Property-wrapper-driven serialization
 /// - Polymorphic / discriminator-based decoding
 public protocol AIStructured: Codable, Sendable {

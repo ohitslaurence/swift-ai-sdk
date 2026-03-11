@@ -21,6 +21,21 @@ private func jsonSchemaCapabilities() -> AIProviderCapabilities {
     )
 }
 
+private func jsonModeCapabilities() -> AIProviderCapabilities {
+    AIProviderCapabilities(
+        instructions: .default,
+        structuredOutput: AIStructuredOutputCapabilities(
+            supportsJSONMode: true,
+            supportsJSONSchema: false,
+            defaultStrategy: .providerNative
+        ),
+        inputs: .default,
+        tools: .default,
+        streaming: .default,
+        embeddings: .default
+    )
+}
+
 private actor CallCounter {
     var count = 0
 
@@ -125,6 +140,12 @@ private struct ManualSchema: AIStructured, Equatable {
             required: ["value"]
         )
     }
+}
+
+private struct NamedSchemaStruct: AIStructured, Equatable {
+    let required: String
+
+    static var schemaName: String { "named_schema_v1" }
 }
 
 private struct ContainsDrivenDecoding: AIStructured, Equatable {
@@ -394,6 +415,24 @@ struct StrategySelectionTests {
         let strategy = StructuredOutputGenerator.selectStrategy(capabilities: capabilities)
         #expect(strategy == .promptInjection)
     }
+
+    @Test("14. Native JSON mode requires an explicit .json request")
+    func nativeJSONModeRequiresExplicitRequest() {
+        let capabilities = AIStructuredOutputCapabilities(
+            supportsJSONMode: true,
+            supportsJSONSchema: false,
+            defaultStrategy: .providerNative
+        )
+
+        let implicitStrategy = StructuredOutputGenerator.selectStrategy(capabilities: capabilities)
+        let explicitStrategy = StructuredOutputGenerator.selectStrategy(
+            requestedResponseFormat: .json,
+            capabilities: capabilities
+        )
+
+        #expect(implicitStrategy == .promptInjection)
+        #expect(explicitStrategy == .nativeJSONMode)
+    }
 }
 
 // MARK: - Repair Tests
@@ -401,7 +440,7 @@ struct StrategySelectionTests {
 @Suite("Structured Output - Repair")
 struct RepairTests {
 
-    @Test("14. Built-in repair strips Markdown fences")
+    @Test("15. Built-in repair strips Markdown fences")
     func stripMarkdownFences() {
         let input = """
             ```json
@@ -417,7 +456,7 @@ struct RepairTests {
         }
     }
 
-    @Test("15. Built-in repair extracts JSON from surrounding prose")
+    @Test("16. Built-in repair extracts JSON from surrounding prose")
     func extractJSONFromProse() {
         let input = """
             Here is the result:
@@ -433,7 +472,7 @@ struct RepairTests {
         }
     }
 
-    @Test("16. Custom repair receives AIErrorContext and can return repaired text")
+    @Test("17. Custom repair receives AIErrorContext and can return repaired text")
     func customRepairHandler() async throws {
         let json = #"{"required": "hello"}"#
         let contextCapture = ContextCapture()
@@ -472,7 +511,7 @@ struct RepairTests {
 @Suite("Structured Output - Retry")
 struct RetryTests {
 
-    @Test("17. Retry on invalid JSON succeeds on a later attempt")
+    @Test("18. Retry on invalid JSON succeeds on a later attempt")
     func retrySucceeds() async throws {
         let counter = CallCounter()
         let provider = MockProvider(
@@ -507,7 +546,7 @@ struct RetryTests {
         #expect(response.attempts == 2)
     }
 
-    @Test("18. Exhausted retries throw .decodingError")
+    @Test("19. Exhausted retries throw .decodingError")
     func exhaustedRetriesThrow() async throws {
         let provider = MockProvider(
             completionHandler: { _ in
@@ -536,7 +575,7 @@ struct RetryTests {
 @Suite("Structured Output - Response")
 struct ResponseTests {
 
-    @Test("19. AIStructuredResponse preserves raw AIResponse, warnings, and usage")
+    @Test("20. AIStructuredResponse preserves raw AIResponse, warnings, and usage")
     func responsePreservation() async throws {
         let usage = AIUsage(inputTokens: 10, outputTokens: 20)
         let warning = AIProviderWarning(code: "test", message: "test warning", parameter: nil)
@@ -568,6 +607,147 @@ struct ResponseTests {
         #expect(response.warnings.first?.code == "test")
         #expect(response.attempts == 1)
     }
+
+    @Test("21. Structured output aggregates usage and warnings across retries")
+    func responseAggregationAcrossRetries() async throws {
+        let counter = CallCounter()
+        let firstWarning = AIProviderWarning(code: "first", message: "first warning")
+        let secondWarning = AIProviderWarning(code: "second", message: "second warning")
+
+        let provider = MockProvider(
+            completionHandler: { _ in
+                let count = await counter.increment()
+                if count == 1 {
+                    return AIResponse(
+                        id: "attempt-1",
+                        content: [.text("not json")],
+                        model: "test-model",
+                        usage: AIUsage(inputTokens: 10, outputTokens: 2),
+                        warnings: [firstWarning]
+                    )
+                }
+
+                return AIResponse(
+                    id: "attempt-2",
+                    content: [.text(#"{"required": "value"}"#)],
+                    model: "test-model",
+                    usage: AIUsage(inputTokens: 4, outputTokens: 3),
+                    warnings: [secondWarning]
+                )
+            },
+            capabilities: jsonSchemaCapabilities()
+        )
+
+        let response = try await provider.generate(
+            "test",
+            schema: WithOptionals.self,
+            model: AIModel("test"),
+            maxRetries: 1
+        )
+
+        #expect(response.response.id == "attempt-2")
+        #expect(response.usage.inputTokens == 14)
+        #expect(response.usage.outputTokens == 5)
+        #expect(response.warnings == [firstWarning, secondWarning])
+    }
+
+    @Test("22. Structured output decodes ISO 8601 dates end to end")
+    func structuredDateDecoding() async throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expectedDate = try #require(formatter.date(from: "2025-03-11T10:21:00.123Z"))
+        let provider = MockProvider(
+            completionHandler: { _ in
+                AIResponse(
+                    id: "date-test",
+                    content: [
+                        .text(#"{"name":"release","createdAt":"2025-03-11T10:21:00.123Z"}"#)
+                    ],
+                    model: "test-model"
+                )
+            },
+            capabilities: jsonSchemaCapabilities()
+        )
+
+        let response = try await provider.generate(
+            "test",
+            schema: WithDate.self,
+            model: AIModel("test")
+        )
+
+        #expect(response.value.name == "release")
+        #expect(response.value.createdAt == expectedDate)
+    }
+
+    @Test("23. JSON-mode-only providers require explicit JSON requests")
+    func jsonModeOnlyProviderRequiresExplicitRequest() async throws {
+        let recorder = MockProviderRecorder()
+        let provider = MockProvider(
+            completionHandler: { _ in
+                AIResponse(
+                    id: "json-mode",
+                    content: [.text(#"{"required":"value"}"#)],
+                    model: "test-model"
+                )
+            },
+            capabilities: jsonModeCapabilities(),
+            recorder: recorder
+        )
+
+        _ = try await provider.generate(
+            "test",
+            schema: WithOptionals.self,
+            model: AIModel("test")
+        )
+
+        let implicitRequest = await recorder.completeCalls.last
+        #expect(implicitRequest?.responseFormat == .text)
+        #expect(implicitRequest?.systemPrompt?.contains("ONLY valid JSON matching this schema") == true)
+
+        _ = try await provider.generate(
+            AIRequest(
+                model: AIModel("test"),
+                messages: [.user("test")],
+                responseFormat: .json
+            ),
+            schema: WithOptionals.self,
+            maxRetries: 0
+        )
+
+        let calls = await recorder.completeCalls
+        let explicitRequest = calls.last
+        #expect(calls.count == 2)
+        #expect(explicitRequest?.responseFormat == .json)
+        #expect(explicitRequest?.systemPrompt == nil)
+    }
+
+    @Test("24. Structured output propagates schemaName into native schema requests")
+    func structuredOutputPropagatesSchemaName() async throws {
+        let recorder = MockProviderRecorder()
+        let provider = MockProvider(
+            completionHandler: { _ in
+                AIResponse(
+                    id: "named-schema",
+                    content: [.text(#"{"required":"value"}"#)],
+                    model: "test-model"
+                )
+            },
+            capabilities: jsonSchemaCapabilities(),
+            recorder: recorder
+        )
+
+        _ = try await provider.generate(
+            "test",
+            schema: NamedSchemaStruct.self,
+            model: AIModel("test")
+        )
+
+        let request = await recorder.completeCalls.last
+        #expect(
+            request?.responseFormat
+                == .jsonSchema(try NamedSchemaStruct.jsonSchema, name: NamedSchemaStruct.schemaName)
+        )
+    }
 }
 
 // MARK: - Cancellation Tests
@@ -575,7 +755,7 @@ struct ResponseTests {
 @Suite("Structured Output - Cancellation")
 struct CancellationTests {
 
-    @Test("20. Cancellation during repair or retry aborts immediately with .cancelled")
+    @Test("25. Cancellation during repair or retry aborts immediately with .cancelled")
     func cancellationAborts() async throws {
         let taskStarted = TaskStartSignal()
 
@@ -608,8 +788,6 @@ struct CancellationTests {
         do {
             _ = try await task.value
             Issue.record("Expected cancellation error")
-        } catch is CancellationError {
-            // Swift runtime cancellation - acceptable
         } catch let error as AIError {
             switch error {
             case .cancelled:
@@ -617,6 +795,8 @@ struct CancellationTests {
             default:
                 Issue.record("Unexpected error: \(error)")
             }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 }

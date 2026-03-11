@@ -2,6 +2,10 @@
 
 > Turn a `Codable` type into a validated, retry-capable AI response. The killer feature for app developers.
 
+## Review History
+
+- 2026-03-11: Deep implementation audit completed. Tightened structured-output strategy selection so native JSON mode is only used for explicit `.json` requests, restored native-schema propagation of `AIStructured.schemaName`, aligned Date decoding with generated `date-time` schemas, normalized cancellation to `AIError.cancelled`, aggregated usage and warnings across retries, and expanded regression coverage.
+
 ## Goal
 
 Let developers say `provider.generate(prompt, schema: MyType.self)` and get back a decoded Swift type - with JSON Schema generation, local validation, repair, and retry behavior that works across providers.
@@ -102,7 +106,7 @@ print(response.attempts)
 
 | Capability | Strategy |
 |------------|----------|
-| `supportsJSONSchema == true` | set `request.responseFormat = .jsonSchema(schema)` |
+| `supportsJSONSchema == true` | set `request.responseFormat = .jsonSchema(schema, name: T.schemaName)` |
 | `supportsJSONMode == true` and caller requested `.json` | set `request.responseFormat = .json` |
 | `defaultStrategy == .toolCallFallback` | use synthetic tool-call extraction |
 | `defaultStrategy == .promptInjection` | inject schema + JSON-only instructions into `systemPrompt` |
@@ -110,9 +114,10 @@ print(response.attempts)
 Rules:
 
 1. Prefer provider-native JSON Schema whenever available.
-2. Native JSON mode is acceptable only for `.json`, never as a replacement for `.jsonSchema`.
-3. Tool-call fallback is only for providers without native schema mode.
-4. Prompt injection is the last resort.
+2. Native JSON mode is acceptable only when the caller explicitly requested `.json`, never as a replacement for `.jsonSchema` in the typed helper's default path.
+3. Typed structured-output helpers must preserve `T.schemaName` when they opt into native JSON Schema mode.
+4. Tool-call fallback is only for providers without native schema mode.
+5. Prompt injection is the last resort.
 
 ### JSON Schema Generation from Codable
 
@@ -122,7 +127,7 @@ The default `AIStructured.jsonSchema` implementation supports a documented subse
 - `String`, `Int`, `Double`, `Bool`, `Decimal`, and `Date`
 - `Optional<T>`
 - `Array<T>`
-- string-backed enums
+- string-backed enums that also conform to `CaseIterable`
 - `CodingKeys`
 
 It must reject and throw `AIError.unsupportedFeature` for shapes that cannot be reflected safely, including:
@@ -130,7 +135,7 @@ It must reject and throw `AIError.unsupportedFeature` for shapes that cannot be 
 - custom `init(from:)` / `encode(to:)` implementations that change the serialized shape
 - recursive or self-referential object graphs
 - associated-value enums
-- top-level unkeyed containers
+- single-value or unkeyed top-level decoding shapes that cannot be safely represented as keyed structured types
 - property-wrapper-driven serialization that cannot be discovered reliably
 - polymorphic / discriminator-based decoding
 
@@ -145,9 +150,10 @@ This is intentionally conservative. Evidence beats guesses: if the SDK cannot pr
 - `Date` -> `.string(format: "date-time")`
 - `Optional<T>` -> schema for `T`, omitted from the object's `required` list
 - `Array<T>` -> `.array(items: schema(T))`
-- string-backed enums -> `.string(enumValues: [...])`
+- string-backed `CaseIterable` enums -> `.string(enumValues: [...])`
 - keyed structs -> `.object(properties: ..., required: ...)`
 - `CodingKeys` define external field names
+- local validation must decode `Date` values using an ISO 8601 date-time strategy compatible with the generated schema
 
 ### Repair + Retry Flow
 
@@ -163,6 +169,7 @@ When the model returns invalid JSON or JSON that does not decode into `T`:
 Cancellation rule:
 
 - Check for task cancellation before running repair work, before sleeping for retry backoff, and before issuing the next corrective retry request. If cancelled, throw `AIError.cancelled` immediately without appending more corrective context.
+- Normalize `CancellationError` values thrown by provider calls or custom repair handlers into `AIError.cancelled`.
 
 Built-in repairs, in order:
 
@@ -197,6 +204,11 @@ Failure modes:
 - tool input is incomplete / invalid JSON
 
 All three must flow through the same repair + retry path.
+
+### Response Accounting
+
+- `AIStructuredResponse.response` preserves the final provider response from the successful attempt.
+- `AIStructuredResponse.usage` and `AIStructuredResponse.warnings` aggregate across the full structured-output operation so retries are not silently dropped from accounting.
 
 ### AIJSONSchema Notes
 
@@ -250,8 +262,12 @@ Sources/AICore/
 16. Custom repair receives `AIErrorContext` and can return repaired text.
 17. Retry on invalid JSON succeeds on a later attempt.
 18. Exhausted retries throw `.decodingError`.
-19. `AIStructuredResponse` preserves the raw `AIResponse`, warnings, and usage.
+19. `AIStructuredResponse` preserves the raw `AIResponse`, while usage and warnings aggregate across retries.
 20. Cancellation during repair or retry aborts immediately with `AIError.cancelled`.
+21. Date-typed structured outputs decode ISO 8601 `date-time` payloads end to end.
+22. JSON-mode-only providers use prompt injection by default, but honor explicit `.json` requests.
+23. Retry accounting preserves warnings from failed attempts.
+24. `CancellationError` thrown from provider work is normalized to `AIError.cancelled`.
 
 ## Acceptance Criteria
 
@@ -264,6 +280,6 @@ Sources/AICore/
 - [ ] Built-in repair runs before retries.
 - [ ] Custom repair uses `AIErrorContext`, not a non-`Sendable` plain `Error`.
 - [ ] Cancellation stops repair and corrective retries immediately.
-- [ ] `AIStructuredResponse` carries the decoded value plus the underlying `AIResponse`.
-- [ ] All 20 test cases pass.
+- [ ] `AIStructuredResponse` carries the decoded value plus the underlying final `AIResponse`, with operation-level usage and warnings.
+- [ ] Regression coverage includes Date decoding, JSON-mode selection, retry accounting, and cancellation normalization.
 - [ ] No external dependencies.

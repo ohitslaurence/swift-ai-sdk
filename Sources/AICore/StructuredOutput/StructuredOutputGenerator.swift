@@ -15,7 +15,10 @@ enum StructuredOutputGenerator {
         repair: AIRepairHandler?
     ) async throws -> AIStructuredResponse<T> {
         let jsonSchema = try T.jsonSchema
-        let strategy = selectStrategy(capabilities: provider.capabilities.structuredOutput)
+        let strategy = selectStrategy(
+            requestedResponseFormat: request.responseFormat,
+            capabilities: provider.capabilities.structuredOutput
+        )
         var currentRequest = applyStrategy(
             strategy,
             to: request,
@@ -23,62 +26,87 @@ enum StructuredOutputGenerator {
             schemaName: T.schemaName,
             capabilities: provider.capabilities
         )
+        var accumulatedUsage = StructuredOutputUsageAccumulator()
+        var accumulatedWarnings: [AIProviderWarning] = []
 
-        for attempt in 1...(maxRetries + 1) {
-            try checkCancellation()
+        do {
+            for attempt in 1...(maxRetries + 1) {
+                try checkCancellation()
 
-            let response = try await provider.complete(currentRequest)
-            let rawText = extractText(from: response, strategy: strategy)
+                let response = try await provider.complete(currentRequest)
+                accumulatedUsage.add(response.usage)
+                mergeWarnings(from: response.warnings, into: &accumulatedWarnings)
 
-            // Step 1: Try direct decode.
-            if let value = tryDecode(rawText, as: T.self) {
-                return AIStructuredResponse(value: value, response: response, attempts: attempt)
-            }
+                let rawText = extractText(from: response, strategy: strategy)
 
-            // Step 2: Try built-in repair.
-            try checkCancellation()
+                // Step 1: Try direct decode.
+                if let value = tryDecode(rawText, as: T.self) {
+                    return AIStructuredResponse(
+                        value: value,
+                        response: response,
+                        attempts: attempt,
+                        usage: accumulatedUsage.value,
+                        warnings: accumulatedWarnings
+                    )
+                }
 
-            if let repaired = StructuredOutputRepair.attemptBuiltInRepair(rawText),
-                let value = tryDecode(repaired, as: T.self)
-            {
-                return AIStructuredResponse(value: value, response: response, attempts: attempt)
-            }
+                // Step 2: Try built-in repair.
+                try checkCancellation()
 
-            // Step 3: Try custom repair handler.
-            if let repair {
+                if let repaired = StructuredOutputRepair.attemptBuiltInRepair(rawText),
+                    let value = tryDecode(repaired, as: T.self)
+                {
+                    return AIStructuredResponse(
+                        value: value,
+                        response: response,
+                        attempts: attempt,
+                        usage: accumulatedUsage.value,
+                        warnings: accumulatedWarnings
+                    )
+                }
+
+                // Step 3: Try custom repair handler.
+                if let repair {
+                    try checkCancellation()
+
+                    let errorContext = decodingErrorContext(rawText, as: T.self)
+                    if let customRepaired = try await repair(rawText, errorContext),
+                        let value = tryDecode(customRepaired, as: T.self)
+                    {
+                        return AIStructuredResponse(
+                            value: value,
+                            response: response,
+                            attempts: attempt,
+                            usage: accumulatedUsage.value,
+                            warnings: accumulatedWarnings
+                        )
+                    }
+                }
+
+                // Step 4: If retries remain, append corrective context and try again.
+                let isLastAttempt = attempt > maxRetries
+                if isLastAttempt {
+                    let errorContext = decodingErrorContext(rawText, as: T.self)
+                    throw AIError.decodingError(
+                        AIErrorContext(
+                            message:
+                                "Failed to decode \(T.self) after \(attempt) attempt(s): \(errorContext.message)"
+                        )
+                    )
+                }
+
                 try checkCancellation()
 
                 let errorContext = decodingErrorContext(rawText, as: T.self)
-                if let customRepaired = try await repair(rawText, errorContext),
-                    let value = tryDecode(customRepaired, as: T.self)
-                {
-                    return AIStructuredResponse(
-                        value: value, response: response, attempts: attempt
-                    )
-                }
+                let retryInstruction = StructuredOutputRepair.retryPrompt(error: errorContext.message)
+                let existingSystem = currentRequest.systemPrompt ?? ""
+                currentRequest.systemPrompt =
+                    existingSystem.isEmpty
+                    ? retryInstruction
+                    : existingSystem + "\n\n" + retryInstruction
             }
-
-            // Step 4: If retries remain, append corrective context and try again.
-            let isLastAttempt = attempt > maxRetries
-            if isLastAttempt {
-                let errorContext = decodingErrorContext(rawText, as: T.self)
-                throw AIError.decodingError(
-                    AIErrorContext(
-                        message:
-                            "Failed to decode \(T.self) after \(attempt) attempt(s): \(errorContext.message)"
-                    )
-                )
-            }
-
-            try checkCancellation()
-
-            let errorContext = decodingErrorContext(rawText, as: T.self)
-            let retryInstruction = StructuredOutputRepair.retryPrompt(error: errorContext.message)
-            let existingSystem = currentRequest.systemPrompt ?? ""
-            currentRequest.systemPrompt =
-                existingSystem.isEmpty
-                ? retryInstruction
-                : existingSystem + "\n\n" + retryInstruction
+        } catch is CancellationError {
+            throw AIError.cancelled
         }
 
         throw AIError.decodingError(
@@ -96,17 +124,19 @@ enum StructuredOutputGenerator {
     }
 
     static func selectStrategy(
+        requestedResponseFormat: AIResponseFormat = .text,
         capabilities: AIStructuredOutputCapabilities
     ) -> Strategy {
         if capabilities.supportsJSONSchema {
             return .nativeJSONSchema
         }
 
+        if requestedResponseFormat == .json, capabilities.supportsJSONMode {
+            return .nativeJSONMode
+        }
+
         switch capabilities.defaultStrategy {
         case .providerNative:
-            if capabilities.supportsJSONMode {
-                return .nativeJSONMode
-            }
             return .promptInjection
 
         case .toolCallFallback:
@@ -130,7 +160,7 @@ enum StructuredOutputGenerator {
 
         switch strategy {
         case .nativeJSONSchema:
-            modified.responseFormat = .jsonSchema(schema)
+            modified.responseFormat = .jsonSchema(schema, name: schemaName)
 
         case .nativeJSONMode:
             modified.responseFormat = .json
@@ -187,7 +217,7 @@ enum StructuredOutputGenerator {
 
     private static func tryDecode<T: Codable>(_ text: String, as type: T.Type) -> T? {
         guard let data = text.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        return try? makeDecoder().decode(type, from: data)
     }
 
     private static func decodingErrorContext<T: Codable>(
@@ -197,11 +227,37 @@ enum StructuredOutputGenerator {
             return AIErrorContext(message: "Text is not valid UTF-8")
         }
         do {
-            _ = try JSONDecoder().decode(type, from: data)
+            _ = try makeDecoder().decode(type, from: data)
             return AIErrorContext(message: "Unknown decoding error")
         } catch {
             return AIErrorContext(message: String(describing: error))
         }
+    }
+
+    private static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+
+            let fractionalSecondsFormatter = ISO8601DateFormatter()
+            fractionalSecondsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractionalSecondsFormatter.date(from: value) {
+                return date
+            }
+
+            let internetDateTimeFormatter = ISO8601DateFormatter()
+            internetDateTimeFormatter.formatOptions = [.withInternetDateTime]
+            if let date = internetDateTimeFormatter.date(from: value) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected an ISO 8601 date-time string."
+            )
+        }
+        return decoder
     }
 
     private static func schemaToJSONString(_ schema: AIJSONSchema) -> String {
@@ -219,5 +275,73 @@ enum StructuredOutputGenerator {
         if Task.isCancelled {
             throw AIError.cancelled
         }
+    }
+
+    private static func mergeWarnings(
+        from newWarnings: [AIProviderWarning],
+        into accumulatedWarnings: inout [AIProviderWarning]
+    ) {
+        for warning in newWarnings where !accumulatedWarnings.contains(warning) {
+            accumulatedWarnings.append(warning)
+        }
+    }
+}
+
+private struct StructuredOutputUsageAccumulator {
+    private(set) var inputTokens = 0
+    private(set) var outputTokens = 0
+    private(set) var cachedTokens: Int?
+    private(set) var cacheWriteTokens: Int?
+    private(set) var reasoningTokens: Int?
+    private(set) var hasValue = false
+
+    mutating func add(_ usage: AIUsage) {
+        hasValue = true
+        inputTokens += usage.inputTokens
+        outputTokens += usage.outputTokens
+
+        if let cached = usage.inputTokenDetails?.cachedTokens {
+            cachedTokens = (cachedTokens ?? 0) + cached
+        }
+
+        if let cacheWrites = usage.inputTokenDetails?.cacheWriteTokens {
+            cacheWriteTokens = (cacheWriteTokens ?? 0) + cacheWrites
+        }
+
+        if let reasoning = usage.outputTokenDetails?.reasoningTokens {
+            reasoningTokens = (reasoningTokens ?? 0) + reasoning
+        }
+    }
+
+    var value: AIUsage {
+        guard hasValue else {
+            return AIUsage(inputTokens: 0, outputTokens: 0)
+        }
+
+        let inputDetails: AIUsage.InputTokenDetails? = {
+            guard cachedTokens != nil || cacheWriteTokens != nil else {
+                return nil
+            }
+
+            return AIUsage.InputTokenDetails(
+                cachedTokens: cachedTokens,
+                cacheWriteTokens: cacheWriteTokens
+            )
+        }()
+
+        let outputDetails: AIUsage.OutputTokenDetails? = {
+            guard reasoningTokens != nil else {
+                return nil
+            }
+
+            return AIUsage.OutputTokenDetails(reasoningTokens: reasoningTokens)
+        }()
+
+        return AIUsage(
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            inputTokenDetails: inputDetails,
+            outputTokenDetails: outputDetails
+        )
     }
 }

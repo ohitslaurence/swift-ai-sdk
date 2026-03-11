@@ -408,6 +408,32 @@ final class OpenAIJSONSchemaTests: XCTestCase {
         XCTAssertEqual(jsonSchema["strict"] as? Bool, true)
         XCTAssertNotNil(jsonSchema["schema"])
     }
+
+    func test_jsonSchemaResponseFormatUsesProvidedSchemaName() async throws {
+        let capture = RequestCapture()
+
+        let provider = makeProvider { request in
+            await capture.set(request)
+            return (completionJSON(), httpResponse())
+        }
+
+        let schema = AIJSONSchema.object(
+            properties: ["name": .string()],
+            required: ["name"]
+        )
+
+        let request = AIRequest(
+            model: .gpt(.gpt4o),
+            messages: [.user("Name?")],
+            responseFormat: .jsonSchema(schema, name: "recipe_v1")
+        )
+        _ = try await provider.complete(request)
+
+        let json = try await bodyJSON(capture)
+        let responseFormat = json["response_format"] as! [String: Any]
+        let jsonSchema = responseFormat["json_schema"] as! [String: Any]
+        XCTAssertEqual(jsonSchema["name"] as? String, "recipe_v1")
+    }
 }
 
 // MARK: - Test 10: max_completion_tokens
