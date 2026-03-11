@@ -9,12 +9,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.0"
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+      - name: Build
+        run: swift build
       - name: Build documentation
         run: |
-          swift build
           SDK_PATH="$(xcrun --show-sdk-path)"
           mkdir -p .build/symbol-graphs .build/docc-output
           xcrun swift-symbolgraph-extract \
