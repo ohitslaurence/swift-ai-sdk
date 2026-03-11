@@ -1,7 +1,7 @@
-@testable import AICore
 import AITestSupport
 import Foundation
 import Testing
+@testable import AICore
 
 @Suite("Tool Use & Agentic Loops")
 struct ToolUseTests {
@@ -93,7 +93,7 @@ struct ToolUseTests {
     @Test("Multiple tool calls in one step execute concurrently")
     func multipleToolCallsConcurrent() async throws {
         let callCount = Counter()
-        let sleepDuration: UInt64 = 200_000_000
+        let sleepDuration: UInt64 = 500_000_000
 
         let provider = MockProvider(
             completionHandler: { request in
@@ -136,7 +136,7 @@ struct ToolUseTests {
 
         let resultContents = Set(result.steps[0].toolResults.map(\.content))
         #expect(resultContents == Set(["a", "b"]))
-        #expect(elapsed < .milliseconds(350))
+        #expect(elapsed < .milliseconds(750))
     }
 
     // MARK: - 3. Multi-step loop calls tools across multiple turns
