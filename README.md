@@ -212,6 +212,28 @@ let provider = withTelemetry(openai, configuration: AITelemetryConfiguration(
 ))
 ```
 
+## Models
+
+Each provider ships predefined model constants for discoverability and type safety:
+
+```swift
+.gpt(.gpt5Mini)        // OpenAI GPT-5 Mini
+.claude(.sonnet4_6)    // Anthropic Claude Sonnet 4.6
+```
+
+You're never locked into the predefined list. Use `.custom()` for any model string — new releases, fine-tunes, or aliases:
+
+```swift
+.gpt(.custom("gpt-6-turbo"))
+.claude(.custom("claude-haiku-4-5-20251001"))
+```
+
+Or skip the helpers entirely and pass a raw string:
+
+```swift
+AIModel("gpt-5-mini")
+```
+
 ## Modules
 
 | Module | Description |
